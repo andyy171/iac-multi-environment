@@ -44,7 +44,7 @@ jobs:
         exit 1
 
     - name: Validate environment
-      if: "!contains(['dev', 'staging', 'prod', 'all'], github.event.inputs.environment)"
+      if: ${{ !contains('dev,staging,prod,all', github.event.inputs.environment) }}
       run: |
         echo "ERROR: Invalid environment specified"
         exit 1
