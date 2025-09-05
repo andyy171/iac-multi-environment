@@ -1,0 +1,323 @@
+name: IaC Multi-Environment Deploy
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'terraform/**'
+      - 'ansible/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - 'ansible/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+        - plan
+        - apply
+        - destroy
+
+env:
+  TF_VERSION: '1.5.0'
+  AWS_REGION: 'ap-south-1'
+
+jobs:
+  validate:
+    name: Validate Infrastructure Code
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install Ansible
+      run: |
+        python -m pip install --upgrade pip
+        pip install ansible ansible-lint
+        
+    - name: Terraform Format Check
+      run: |
+        terraform fmt -check -recursive terraform/
+        
+    - name: Terraform Validate
+      run: |
+        for env in dev staging prod; do
+          echo "Validating $env environment..."
+          cd terraform/environments/$env
+          terraform init -backend=false
+          terraform validate
+          cd -
+        done
+        
+    - name: Ansible Lint
+      run: |
+        ansible-lint ansible/
+
+  plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || github.event.inputs.action == 'plan'
+    needs: [validate]
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+      fail-fast: false
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        terraform_wrapper: false
+        
+    - name: Terraform Init
+      working-directory: terraform/environments/${{ matrix.environment }}
+      run: terraform init
+      
+    - name: Terraform Plan
+      working-directory: terraform/environments/${{ matrix.environment }}
+      run: |
+        terraform plan -out=tfplan-${{ matrix.environment }} -detailed-exitcode
+      continue-on-error: true
+      id: plan
+      
+    - name: Upload Plan Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: tfplan-${{ matrix.environment }}
+        path: terraform/environments/${{ matrix.environment }}/tfplan-${{ matrix.environment }}
+        retention-days: 5
+
+  deploy:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'apply'))
+    needs: [plan]
+    strategy:
+      matrix:
+        environment: [dev, staging, prod]
+      max-parallel: 1  # Deploy environments sequentially
+    environment: 
+      name: ${{ matrix.environment }}
+      url: ${{ steps.deploy.outputs.web_url }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        terraform_wrapper: false
+        
+    - name: Setup Python and Ansible
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install Ansible
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Setup SSH Key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/iac-demo-key.pem
+        chmod 600 ~/.ssh/iac-demo-key.pem
+        ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+        
+    - name: Terraform Init
+      working-directory: terraform/environments/${{ matrix.environment }}
+      run: terraform init
+      
+    - name: Terraform Apply
+      working-directory: terraform/environments/${{ matrix.environment }}
+      run: terraform apply -auto-approve
+      id: deploy
+      
+    - name: Get Terraform Outputs
+      working-directory: terraform/environments/${{ matrix.environment }}
+      run: |
+        echo "web_url=$(terraform output -raw web_url)" >> $GITHUB_OUTPUT
+        echo "public_ip=$(terraform output -raw public_ip)" >> $GITHUB_OUTPUT
+        echo "instance_id=$(terraform output -raw instance_id)" >> $GITHUB_OUTPUT
+      id: tf_output
+      
+    - name: Wait for Instance to be Ready
+      run: |
+        echo "Waiting for instance to be ready..."
+        sleep 60  # Wait for instance to fully boot
+        
+    - name: Generate Ansible Inventory
+      run: |
+        cd terraform/environments/${{ matrix.environment }}
+        terraform output -json ansible_inventory > ../../../ansible/inventory/${{ matrix.environment }}.json
+        
+        # Convert to INI format for compatibility
+        cat > ../../../ansible/inventory/${{ matrix.environment }}.ini << EOF
+        [${{ matrix.environment }}-web]
+        $(terraform output -raw public_ip) ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/iac-demo-key.pem ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+        
+        [web_servers]
+        $(terraform output -raw public_ip)
+        
+        [${{ matrix.environment }}]
+        $(terraform output -raw public_ip)
+        EOF
+        
+    - name: Run Ansible Playbook
+      working-directory: ansible
+      run: |
+        export ANSIBLE_HOST_KEY_CHECKING=False
+        ansible-playbook \
+          -i inventory/${{ matrix.environment }}.ini \
+          -e "env=${{ matrix.environment }}" \
+          -e "app_name=iac-multi-env" \
+          playbooks/site.yml \
+          --timeout 300
+      
+    - name: Health Check
+      run: |
+        echo "Performing health check..."
+        max_attempts=10
+        attempt=1
+        
+        while [ $attempt -le $max_attempts ]; do
+          echo "Attempt $attempt/$max_attempts"
+          
+          if curl -f --connect-timeout 10 --max-time 30 "http://${{ steps.tf_output.outputs.public_ip }}"; then
+            echo "✅ Health check passed!"
+            echo "🌐 Web server is accessible at: http://${{ steps.tf_output.outputs.public_ip }}"
+            break
+          else
+            echo "❌ Health check failed, retrying in 30 seconds..."
+            if [ $attempt -eq $max_attempts ]; then
+              echo "❌ Health check failed after $max_attempts attempts"
+              exit 1
+            fi
+            sleep 30
+            ((attempt++))
+          fi
+        done
+        
+    - name: Run Infrastructure Tests
+      run: |
+        echo "Running infrastructure tests..."
+        
+        # Test SSH connectivity
+        ssh -i ~/.ssh/iac-demo-key.pem -o StrictHostKeyChecking=no \
+          ubuntu@${{ steps.tf_output.outputs.public_ip }} \
+          "echo 'SSH connectivity test passed'"
+        
+        # Test Nginx service
+        ssh -i ~/.ssh/iac-demo-key.pem -o StrictHostKeyChecking=no \
+          ubuntu@${{ steps.tf_output.outputs.public_ip }} \
+          "sudo systemctl is-active nginx"
+        
+        # Test web content
+        response=$(curl -s "http://${{ steps.tf_output.outputs.public_ip }}")
+        if [[ $response == *"Hello from ${{ matrix.environment }}"* ]]; then
+          echo "✅ Web content test passed"
+        else
+          echo "❌ Web content test failed"
+          exit 1
+        fi
+        
+    - name: Deployment Summary
+      run: |
+        echo "## 🚀 Deployment Summary - ${{ matrix.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Environment | ${{ matrix.environment }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Instance ID | ${{ steps.tf_output.outputs.instance_id }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Public IP | ${{ steps.tf_output.outputs.public_ip }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Web URL | [${{ steps.tf_output.outputs.web_url }}](${{ steps.tf_output.outputs.web_url }}) |" >> $GITHUB_STEP_SUMMARY
+        echo "| Region | ${{ env.AWS_REGION }} |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Deployment completed successfully!" >> $GITHUB_STEP_SUMMARY
+
+  destroy:
+    name: Destroy Infrastructure
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy'
+    environment: 
+      name: ${{ github.event.inputs.environment }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+        
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        
+    - name: Terraform Init
+      working-directory: terraform/environments/${{ github.event.inputs.environment }}
+      run: terraform init
+      
+    - name: Terraform Destroy
+      working-directory: terraform/environments/${{ github.event.inputs.environment }}
+      run: terraform destroy -auto-approve
+      
+    - name: Cleanup Summary
+      run: |
+        echo "## 🗑️ Cleanup Summary - ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Infrastructure destroyed successfully!" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "All resources in the **${{ github.event.inputs.environment }}** environment have been removed." >> $GITHUB_STEP_SUMMARY
