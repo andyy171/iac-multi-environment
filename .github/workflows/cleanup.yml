@@ -1,0 +1,298 @@
+name: Resource Cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to clean up (dev/staging/prod/all)'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+          - all
+      confirm:
+        description: 'Type "DESTROY" to confirm resource destruction'
+        required: true
+        type: string
+      force:
+        description: 'Force cleanup (skip confirmation)'
+        required: false
+        default: false
+        type: boolean
+
+  schedule:
+    # Cleanup dev environment daily at 2 AM UTC
+    - cron: '0 2 * * *'
+
+env:
+  AWS_REGION: ap-southeast-1
+
+jobs:
+  validate-input:
+    name: Validate Cleanup Input
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    
+    steps:
+    - name: Validate confirmation
+      if: github.event.inputs.confirm != 'DESTROY' && github.event.inputs.force != 'true'
+      run: |
+        echo "ERROR: You must type 'DESTROY' in the confirm field or set force to true"
+        exit 1
+
+    - name: Validate environment
+      if: "!contains(['dev', 'staging', 'prod', 'all'], github.event.inputs.environment)"
+      run: |
+        echo "ERROR: Invalid environment specified"
+        exit 1
+
+  cleanup-dev:
+    name: Cleanup Dev Environment
+    runs-on: ubuntu-latest
+    needs: [validate-input]
+    if: |
+      always() && 
+      (github.event.inputs.environment == 'dev' || 
+       github.event.inputs.environment == 'all' || 
+       github.event_name == 'schedule')
+    
+    environment: dev-cleanup
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Terraform Init
+      working-directory: terraform/environments/dev
+      run: terraform init
+
+    - name: Check for existing resources
+      id: plan-destroy
+      working-directory: terraform/environments/dev
+      run: |
+        terraform plan -destroy -detailed-exitcode
+        echo "exitcode=$?" >> $GITHUB_OUTPUT
+      continue-on-error: true
+
+    - name: Destroy Dev Resources
+      if: steps.plan-destroy.outputs.exitcode == '2'
+      working-directory: terraform/environments/dev
+      run: |
+        echo "Destroying dev environment resources..."
+        terraform destroy -auto-approve
+        echo "Dev environment cleanup completed"
+
+    - name: No resources to destroy
+      if: steps.plan-destroy.outputs.exitcode == '0'
+      run: echo "No resources found to destroy in dev environment"
+
+  cleanup-staging:
+    name: Cleanup Staging Environment
+    runs-on: ubuntu-latest
+    needs: [validate-input]
+    if: |
+      always() && 
+      needs.validate-input.result != 'failure' &&
+      (github.event.inputs.environment == 'staging' || 
+       github.event.inputs.environment == 'all')
+    
+    environment: staging-cleanup
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Terraform Init
+      working-directory: terraform/environments/staging
+      run: terraform init
+
+    - name: Check for existing resources
+      id: plan-destroy
+      working-directory: terraform/environments/staging
+      run: |
+        terraform plan -destroy -detailed-exitcode
+        echo "exitcode=$?" >> $GITHUB_OUTPUT
+      continue-on-error: true
+
+    - name: Destroy Staging Resources
+      if: steps.plan-destroy.outputs.exitcode == '2'
+      working-directory: terraform/environments/staging
+      run: |
+        echo "Destroying staging environment resources..."
+        terraform destroy -auto-approve
+        echo "Staging environment cleanup completed"
+
+    - name: No resources to destroy
+      if: steps.plan-destroy.outputs.exitcode == '0'
+      run: echo "No resources found to destroy in staging environment"
+
+  cleanup-prod:
+    name: Cleanup Production Environment
+    runs-on: ubuntu-latest
+    needs: [validate-input]
+    if: |
+      always() && 
+      needs.validate-input.result != 'failure' &&
+      (github.event.inputs.environment == 'prod' || 
+       github.event.inputs.environment == 'all')
+    
+    environment: prod-cleanup
+    
+    steps:
+    - name: Manual approval required for production
+      uses: trstringer/manual-approval@v1
+      with:
+        secret: ${{ github.TOKEN }}
+        approvers: ${{ github.actor }}
+        minimum-approvals: 1
+        issue-title: "Production Environment Cleanup Approval Required"
+        issue-body: |
+          **WARNING: Production Environment Cleanup**
+          
+          This action will DESTROY all resources in the production environment.
+          
+          **Environment:** prod
+          **Triggered by:** ${{ github.actor }}
+          **Workflow:** ${{ github.workflow }}
+          
+          Please review carefully before approving.
+
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.0
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Terraform Init
+      working-directory: terraform/environments/prod
+      run: terraform init
+
+    - name: Check for existing resources
+      id: plan-destroy
+      working-directory: terraform/environments/prod
+      run: |
+        terraform plan -destroy -detailed-exitcode
+        echo "exitcode=$?" >> $GITHUB_OUTPUT
+      continue-on-error: true
+
+    - name: Destroy Production Resources
+      if: steps.plan-destroy.outputs.exitcode == '2'
+      working-directory: terraform/environments/prod
+      run: |
+        echo "Destroying production environment resources..."
+        terraform destroy -auto-approve
+        echo "Production environment cleanup completed"
+
+    - name: No resources to destroy
+      if: steps.plan-destroy.outputs.exitcode == '0'
+      run: echo "No resources found to destroy in production environment"
+
+  cleanup-state-backends:
+    name: Cleanup State Backends
+    runs-on: ubuntu-latest
+    needs: [cleanup-dev, cleanup-staging, cleanup-prod]
+    if: |
+      always() &&
+      github.event.inputs.environment == 'all' &&
+      github.event.inputs.force == 'true'
+    
+    steps:
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Warning about state backend cleanup
+      run: |
+        echo "WARNING: This will remove Terraform state backends"
+        echo "This action is irreversible and will delete:"
+        echo "- S3 buckets containing terraform state"
+        echo "- DynamoDB tables for state locking"
+        echo "Only proceed if you want to completely reset the infrastructure"
+
+    - name: List and remove S3 state buckets
+      run: |
+        # List buckets with terraform state prefix
+        for env in dev staging prod; do
+          BUCKET_NAME="iac-multi-env-terraform-state-${env}-$(aws sts get-caller-identity --query Account --output text)"
+          if aws s3 ls "s3://${BUCKET_NAME}" 2>/dev/null; then
+            echo "Emptying bucket: ${BUCKET_NAME}"
+            aws s3 rm "s3://${BUCKET_NAME}" --recursive
+            echo "Deleting bucket: ${BUCKET_NAME}"
+            aws s3 rb "s3://${BUCKET_NAME}"
+          else
+            echo "Bucket ${BUCKET_NAME} does not exist"
+          fi
+        done
+
+    - name: Remove DynamoDB state lock table
+      run: |
+        TABLE_NAME="terraform-state-lock"
+        if aws dynamodb describe-table --table-name "${TABLE_NAME}" 2>/dev/null; then
+          echo "Deleting DynamoDB table: ${TABLE_NAME}"
+          aws dynamodb delete-table --table-name "${TABLE_NAME}"
+          echo "Waiting for table deletion..."
+          aws dynamodb wait table-not-exists --table-name "${TABLE_NAME}"
+        else
+          echo "DynamoDB table ${TABLE_NAME} does not exist"
+        fi
+
+  notification:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    needs: [cleanup-dev, cleanup-staging, cleanup-prod]
+    if: always()
+    
+    steps:
+    - name: Send Success Notification
+      if: needs.cleanup-dev.result == 'success' || needs.cleanup-staging.result == 'success' || needs.cleanup-prod.result == 'success'
+      run: |
+        echo "✅ Cleanup completed successfully"
+        echo "Environment(s): ${{ github.event.inputs.environment || 'dev (scheduled)' }}"
+        echo "Triggered by: ${{ github.actor }}"
+
+    - name: Send Failure Notification
+      if: needs.cleanup-dev.result == 'failure' || needs.cleanup-staging.result == 'failure' || needs.cleanup-prod.result == 'failure'
+      run: |
+        echo "❌ Cleanup failed"
+        echo "Environment(s): ${{ github.event.inputs.environment || 'dev (scheduled)' }}"
+        echo "Please check the workflow logs for details"
+        exit 1
