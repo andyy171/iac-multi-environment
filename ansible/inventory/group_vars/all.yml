@@ -1,0 +1,104 @@
+# Ansible Configuration
+ansible_user: ubuntu
+ansible_python_interpreter: /usr/bin/python3
+ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+ansible_host_key_checking: false
+ansible_ssh_retries: 3
+ansible_timeout: 30
+
+# Project Information
+project_name: "iac-multi-environment"
+project_description: "Multi-environment Infrastructure as Code demonstration"
+
+# System Configuration
+timezone: "Asia/Singapore"
+locale: "en_US.UTF-8"
+
+# Package Management
+package_update_cache: true
+package_upgrade: false  # Set to true only when needed
+
+# Common Packages
+common_packages:
+  - curl
+  - wget
+  - vim
+  - htop
+  - unzip
+  - git
+  - tree
+  - jq
+  - awscli
+
+# Security Configuration
+disable_root_login: true
+allow_password_authentication: false
+ufw_enabled: true
+fail2ban_enabled: true
+
+# Logging Configuration
+log_rotation_enabled: true
+log_retention_days: 30
+syslog_remote_enabled: false
+
+# Monitoring Configuration
+node_exporter_enabled: false  # Set to true if using Prometheus monitoring
+cloudwatch_agent_enabled: true
+
+# Application Configuration
+app_user: "webapp"
+app_group: "webapp"
+app_home: "/opt/webapp"
+
+# Web Server Configuration
+web_server: "nginx"
+web_port: 80
+web_ssl_port: 443
+web_root: "/var/www/html"
+
+# SSL/TLS Configuration
+ssl_enabled: false  # Set to true when SSL certificates are available
+ssl_cert_path: "/etc/ssl/certs"
+ssl_key_path: "/etc/ssl/private"
+
+# Backup Configuration
+backup_enabled: false  # Environment-specific override
+backup_retention_days: 7
+backup_schedule: "0 2 * * *"  # Daily at 2 AM
+
+# Health Check Configuration
+health_check_enabled: true
+health_check_endpoint: "/health"
+health_check_interval: 60
+
+# Performance Tuning
+max_open_files: 65536
+tcp_keepalive: true
+tcp_window_scaling: true
+
+# Environment Detection
+is_production: "{{ environment == 'prod' }}"
+is_staging: "{{ environment == 'staging' }}"
+is_development: "{{ environment == 'dev' }}"
+
+# Resource Limits (can be overridden per environment)
+default_memory_limit: "512m"
+default_cpu_limit: "1"
+default_disk_space_threshold: 80  # Percentage
+
+# Notification Configuration
+notifications_enabled: false
+notification_channels: []
+
+# Maintenance Configuration
+maintenance_mode: false
+maintenance_message: "System is under maintenance. Please try again later."
+
+# Feature Flags
+features:
+  logging: true
+  monitoring: true
+  security_hardening: true
+  performance_optimization: false
+  auto_scaling: false
+  load_balancing: false

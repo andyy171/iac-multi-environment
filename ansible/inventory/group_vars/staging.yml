@@ -1,0 +1,182 @@
+# Environment Configuration
+environment: "staging"
+environment_type: "pre-production"
+deployment_target: "staging"
+
+# Instance Configuration
+instance_size: "medium"
+performance_mode: "staging"
+
+# Staging-specific configuration 
+package_upgrade: false  # More controlled updates
+debug_mode: false
+verbose_logging: false
+
+# Security Configuration 
+fail2ban_enabled: true
+fail2ban_bantime: 3600  # 1 hour
+fail2ban_maxretry: 5
+
+ufw_rules:
+  - { port: 22, proto: tcp, rule: allow, comment: "SSH" }
+  - { port: 80, proto: tcp, rule: allow, comment: "HTTP" }
+  - { port: 443, proto: tcp, rule: allow, comment: "HTTPS" }
+
+# Logging Configuration
+log_level: "INFO"
+log_retention_days: 14  # Medium retention
+detailed_logging: false
+audit_logging: true
+
+# Monitoring Configuration 
+monitoring_enabled: true
+cloudwatch_agent_enabled: true
+metrics_collection_interval: 60  # 1 minute
+alerting_enabled: true
+
+# Backup Configuration
+backup_enabled: true
+backup_retention_days: 14
+snapshot_enabled: true
+snapshot_schedule: "0 3 * * *"  # Daily at 3 AM
+
+# Web Server Configuration
+server_tokens: "off"  # Hide server version
+error_pages_custom: true
+gzip_enabled: true
+gzip_level: 8
+access_log_enabled: true
+
+# Application Configuration
+app_debug: false
+app_log_level: "INFO"
+hot_reload: false
+auto_restart: false
+
+# Performance Testing Tools
+performance_tools:
+  - apache2-utils  
+  - wrk
+  - siege
+
+# Database Configuration (if used)
+db_connection_pool_size: 10
+db_query_cache_enabled: true
+db_slow_query_log: true
+db_backup_enabled: true
+
+# Cache Configuration
+redis_enabled: false  # Can be enabled for testing
+memcached_enabled: false
+cache_ttl: 1800  # 30 minutes
+
+# Performance Configuration
+worker_processes: 2
+worker_connections: 1024
+keepalive_timeout: 65
+
+# SSL Configuration 
+ssl_enabled: false  # Can be enabled for SSL testing
+force_ssl: false
+ssl_protocols:
+  - TLSv1.2
+  - TLSv1.3
+
+# CORS Configuration (more restrictive than dev)
+cors_enabled: true
+cors_origins:
+  - "https://staging.example.com"
+  - "https://test.example.com"
+
+# Load Testing Configuration
+load_testing_enabled: true
+load_test_tools:
+  - name: "ab"
+    command: "ab -n 1000 -c 10"
+  - name: "wrk"
+    command: "wrk -t4 -c100 -d30s"
+
+# Staging Specific Features
+features:
+  load_testing: true
+  performance_monitoring: true
+  integration_testing: true
+  security_scanning: true
+  backup_testing: true
+  disaster_recovery_testing: false
+
+# Environment Variables
+env_vars:
+  NODE_ENV: "staging"
+  DEBUG: "false"
+  LOG_LEVEL: "info"
+  ENVIRONMENT: "staging"
+
+# Resource Limits (production-like)
+memory_limit: "512m"
+cpu_limit: "1"
+disk_space_threshold: 85
+
+# Auto-scaling (can be tested here)
+auto_scaling_enabled: false
+min_instances: 1
+max_instances: 2
+
+# Health Checks (production-like)
+health_check_timeout: 10
+health_check_retries: 3
+health_check_grace_period: 30
+health_check_interval: 30
+
+# Deployment Configuration
+deployment_strategy: "blue-green"  # Test advanced deployment strategies
+deployment_timeout: 600
+rollback_enabled: true
+rollback_timeout: 300
+
+# Testing Configuration
+testing_enabled: true
+test_data_enabled: false  # Use production-like data
+integration_tests: true
+load_testing: true
+security_testing: true
+performance_testing: true
+
+# Quality Assurance
+qa_enabled: true
+code_quality_checks: true
+vulnerability_scanning: true
+penetration_testing: false
+
+# Staging Data Management
+data_refresh_enabled: true
+data_refresh_schedule: "0 2 * * 0"  # Weekly on Sunday at 2 AM
+data_anonymization: true
+data_retention_days: 30
+
+# Notifications
+notifications_enabled: true
+notification_channels:
+  - email
+  - slack
+
+slack_webhook: ""  # Add staging Slack webhook
+email_notifications: true
+email_recipients:
+  - "staging-team@example.com"
+  - "qa-team@example.com"
+  - "zinzinxx01@gmail.com"
+
+# Service Level Objectives (SLOs) 
+slo_availability: 99.0  # 99% availability target
+slo_response_time: 2000  # 2 seconds
+slo_error_rate: 5  # 5% error rate threshold
+
+# Chaos Engineering (optional)
+chaos_engineering:
+  enabled: false
+  scenarios:
+    - cpu_stress
+    - memory_pressure
+    - network_latency
+    - disk_io

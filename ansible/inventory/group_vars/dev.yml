@@ -1,0 +1,137 @@
+# Environment Configuration
+environment: "dev"
+environment_type: "development"
+deployment_target: "development"
+
+# Instance Configuration
+instance_size: "small"
+performance_mode: "development"
+
+# Development-specific overrides
+package_upgrade: true  # Allow package upgrades in dev
+debug_mode: true
+verbose_logging: true
+
+# Security Configuration (relaxed for development)
+fail2ban_enabled: false  # Disabled for easier development access
+ufw_rules:
+  - { port: 22, proto: tcp, rule: allow, comment: "SSH" }
+  - { port: 80, proto: tcp, rule: allow, comment: "HTTP" }
+  - { port: 443, proto: tcp, rule: allow, comment: "HTTPS" }
+  - { port: 3000, proto: tcp, rule: allow, comment: "Dev Server" }
+
+# Logging Configuration
+log_level: "DEBUG"
+log_retention_days: 7  # Shorter retention for dev
+detailed_logging: true
+
+# Monitoring Configuration 
+monitoring_enabled: false
+cloudwatch_agent_enabled: false
+metrics_collection_interval: 300  # 5 minutes
+
+# Backup Configuration
+backup_enabled: false  # No backups needed for dev
+snapshot_enabled: false
+
+# Web Server Configuration
+server_tokens: "on"  # Show server version for debugging
+error_pages_custom: false
+gzip_enabled: true
+gzip_level: 6
+
+# Application Configuration
+app_debug: true
+app_log_level: "DEBUG"
+hot_reload: true
+auto_restart: true
+
+# Development Tools
+dev_tools_enabled: true
+dev_packages:
+  - nodejs
+  - npm
+  - python3-pip
+  - python3-venv
+  - build-essential
+  - python3-dev
+
+# Database Configuration 
+db_connection_pool_size: 5
+db_query_cache_enabled: false
+db_slow_query_log: true
+
+# Cache Configuration
+redis_enabled: false
+memcached_enabled: false
+cache_ttl: 300  # 5 minutes
+
+# Performance Configuration
+worker_processes: 1
+worker_connections: 512
+keepalive_timeout: 30
+
+# SSL Configuration
+ssl_enabled: false
+force_ssl: false
+
+# CORS Configuration 
+cors_enabled: true
+cors_origins:
+  - "http://localhost:3000"
+  - "http://localhost:8080"
+  - "http://127.0.0.1:3000"
+  - "*"  # Very permissive for dev
+
+# Development Specific Features
+features:
+  hot_reload: true
+  debug_toolbar: true
+  profiler: true
+  auto_migration: true
+  seed_data: true
+  mock_services: true
+
+# Environment Variables
+env_vars:
+  NODE_ENV: "development"
+  DEBUG: "true"
+  LOG_LEVEL: "debug"
+  ENVIRONMENT: "development"
+
+# Resource Limits (relaxed for development)
+memory_limit: "256m"
+cpu_limit: "0.5"
+disk_space_threshold: 90  # Higher threshold for dev
+
+# Auto-scaling (disabled for development)
+auto_scaling_enabled: false
+min_instances: 1
+max_instances: 1
+
+# Health Checks
+health_check_timeout: 30
+health_check_retries: 3
+health_check_grace_period: 60
+
+# Deployment Configuration
+deployment_strategy: "rolling"
+deployment_timeout: 300
+rollback_enabled: true
+
+# Testing Configuration
+testing_enabled: true
+test_data_enabled: true
+integration_tests: false
+load_testing: false
+
+# Cost Optimization
+cost_optimization:
+  auto_shutdown: true
+  shutdown_schedule: "0 18 * * 1-5"  # Shutdown at 6 PM on weekdays
+  startup_schedule: "0 9 * * 1-5"    # Start at 9 AM on weekdays
+  weekend_shutdown: true
+
+# Notifications
+slack_webhook: ""  
+email_notifications: false

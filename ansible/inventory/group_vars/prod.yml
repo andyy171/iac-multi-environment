@@ -1,0 +1,248 @@
+# Environment Configuration
+environment: "prod"
+environment_type: "production"
+deployment_target: "production"
+
+# Instance Configuration
+instance_size: "large"
+performance_mode: "production"
+
+# Production-specific configuration (strict and secure)
+package_upgrade: false  # Controlled updates only
+debug_mode: false
+verbose_logging: false
+
+# Security Configuration
+fail2ban_enabled: true
+fail2ban_bantime: 86400  # 24 hours
+fail2ban_maxretry: 3
+fail2ban_findtime: 600   # 10 minutes
+
+ufw_rules:
+  - { port: 22, proto: tcp, rule: allow, src: "10.0.0.0/8", comment: "SSH from private networks only" }
+  - { port: 80, proto: tcp, rule: allow, comment: "HTTP" }
+  - { port: 443, proto: tcp, rule: allow, comment: "HTTPS" }
+
+# Additional Security Hardening
+security_hardening:
+  disable_unused_services: true
+  kernel_hardening: true
+  file_permissions_strict: true
+  audit_logging: true
+  intrusion_detection: true
+
+# Logging Configuration 
+log_level: "WARN"
+log_retention_days: 90  # Long retention for compliance
+detailed_logging: false
+audit_logging: true
+centralized_logging: true
+log_aggregation: true
+
+# Monitoring Configuration 
+monitoring_enabled: true
+cloudwatch_agent_enabled: true
+metrics_collection_interval: 30  # 30 seconds
+alerting_enabled: true
+alert_escalation: true
+
+# Monitoring Thresholds
+monitoring_thresholds:
+  cpu_usage: 80
+  memory_usage: 85
+  disk_usage: 85
+  response_time: 1000  # 1 second
+  error_rate: 1        # 1% error rate
+
+# Backup Configuration (comprehensive)
+backup_enabled: true
+backup_retention_days: 90
+backup_frequency: "daily"
+backup_verification: true
+snapshot_enabled: true
+snapshot_schedule: "0 2 * * *"  # Daily at 2 AM
+cross_region_backup: false  # Enable if required for DR
+
+# Web Server Configuration 
+server_tokens: "off"
+error_pages_custom: true
+gzip_enabled: true
+gzip_level: 9
+access_log_enabled: true
+rate_limiting: true
+ddos_protection: true
+
+# Rate Limiting Configuration
+rate_limits:
+  - zone: "general"
+    rate: "10r/s"
+    burst: 20
+  - zone: "api"
+    rate: "100r/m"
+    burst: 50
+
+# Application Configuration
+app_debug: false
+app_log_level: "ERROR"
+hot_reload: false
+auto_restart: true
+graceful_shutdown: true
+
+# Database Configuration (if used)
+db_connection_pool_size: 20
+db_query_cache_enabled: true
+db_slow_query_log: true
+db_backup_enabled: true
+db_encryption_at_rest: true
+db_encryption_in_transit: true
+
+# Cache Configuration
+redis_enabled: false  # Enable if needed
+memcached_enabled: false
+cache_ttl: 3600  # 1 hour
+cache_encryption: true
+
+# Performance Configuration 
+worker_processes: "auto"  # Auto-detect CPU cores
+worker_connections: 2048
+keepalive_timeout: 65
+client_max_body_size: "10m"
+proxy_cache_enabled: true
+
+# SSL Configuration 
+ssl_enabled: true  # Should be enabled
+force_ssl: true
+ssl_protocols:
+  - TLSv1.2
+  - TLSv1.3
+hsts_enabled: true
+hsts_max_age: 31536000  # 1 year
+
+# CORS Configuration (restrictive)
+cors_enabled: true
+cors_origins:
+  - "https://example.com"
+  - "https://www.example.com"
+
+# Production Specific Features
+features:
+  high_availability: true
+  disaster_recovery: true
+  automated_backups: true
+  security_scanning: true
+  compliance_monitoring: true
+  audit_trail: true
+
+# Environment Variables
+env_vars:
+  NODE_ENV: "production"
+  DEBUG: "false"
+  LOG_LEVEL: "error"
+  ENVIRONMENT: "production"
+
+# Resource Limits (strict)
+memory_limit: "1g"
+cpu_limit: "2"
+disk_space_threshold: 80
+max_file_descriptors: 65536
+
+# Auto-scaling Configuration
+auto_scaling_enabled: false  # Enable if using ASG
+min_instances: 1
+max_instances: 5
+scale_up_threshold: 70   # CPU percentage
+scale_down_threshold: 30  # CPU percentage
+
+# Health Checks (comprehensive)
+health_check_timeout: 5
+health_check_retries: 3
+health_check_grace_period: 30
+health_check_interval: 15
+deep_health_checks: true
+
+# Deployment Configuration (zero-downtime)
+deployment_strategy: "blue-green"
+deployment_timeout: 900  # 15 minutes
+rollback_enabled: true
+rollback_timeout: 180    # 3 minutes
+canary_deployment: false
+
+# Maintenance Window
+maintenance_window:
+  day: "sunday"
+  start_time: "02:00"
+  duration: 120  # minutes
+  timezone: "UTC"
+
+# Testing Configuration 
+testing_enabled: false
+test_data_enabled: false
+integration_tests: false
+load_testing: false  # Only during maintenance windows
+security_testing: true  # Continuous security scanning
+
+# Service Level Objectives (SLOs)
+slo_availability: 99.9   # 99.9% availability target
+slo_response_time: 500   # 500ms
+slo_error_rate: 0.1     # 0.1% error rate threshold
+slo_mttr: 15            # Mean Time To Recovery: 15 minutes
+
+# Incident Management
+incident_response:
+  enabled: true
+  escalation_levels:
+    - level: 1
+      timeout: 5  # minutes
+    - level: 2
+      timeout: 15
+    - level: 3
+      timeout: 30
+
+# Notifications (comprehensive)
+notifications_enabled: true
+notification_channels:
+  - email
+  - slack
+  - pagerduty
+  - webhook
+
+slack_webhook: ""  # Production Slack webhook
+email_notifications: true
+email_recipients:
+  - "production-team@example.com"
+  - "devops@example.com"
+  - "management@example.com"
+
+pagerduty_enabled: false  # Enable if using PagerDuty
+pagerduty_service_key: ""
+
+# Compliance and Audit
+compliance:
+  gdpr_enabled: false
+  hipaa_enabled: false
+  sox_enabled: false
+  audit_trail: true
+  data_retention_policy: 2557  # 7 years in days
+  encryption_required: true
+
+# Disaster Recovery
+disaster_recovery:
+  enabled: true
+  rpo: 4  # Recovery Point Objective: 4 hours
+  rto: 1  # Recovery Time Objective: 1 hour
+  backup_regions:
+    - "ap-southeast-2"  # Sydney as backup region
+  
+# Security Scanning
+security_scanning:
+  vulnerability_scanning: true
+  compliance_scanning: true
+  malware_scanning: true
+  intrusion_detection: true
+  
+# Cost Management
+cost_management:
+  budget_alerts: true
+  resource_optimization: true
+  unused_resource_cleanup: true
+  scheduled_scaling: false
