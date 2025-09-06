@@ -1,0 +1,357 @@
+- name: Install logging packages
+  apt:
+    name:
+      - rsyslog
+      - logrotate
+      - awscli
+      - jq
+    state: present
+  tags: [logging, packages]
+
+- name: Create logging directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: syslog
+    group: adm
+    mode: '0755'
+  loop:
+    - "/var/log/{{ project_name }}"
+    - "/var/log/{{ project_name }}/nginx"
+    - "/var/log/{{ project_name }}/application"
+    - "/var/log/{{ project_name }}/system"
+    - "/var/log/{{ project_name }}/security"
+    - "/var/log/{{ project_name }}/monitoring"
+  tags: [logging, directories]
+
+- name: Configure rsyslog for custom logging
+  template:
+    src: rsyslog-custom.conf.j2
+    dest: /etc/rsyslog.d/50-custom.conf
+    backup: yes
+    mode: '0644'
+  notify: restart rsyslog
+  tags: [logging, rsyslog]
+
+- name: Configure log levels
+  template:
+    src: rsyslog-levels.conf.j2
+    dest: /etc/rsyslog.d/60-levels.conf
+    mode: '0644'
+  notify: restart rsyslog
+  tags: [logging, rsyslog]
+
+- name: Create application logger script
+  template:
+    src: app-logger.sh.j2
+    dest: "{{ app_home }}/scripts/app-logger.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [logging, scripts]
+
+- name: Create log aggregation script
+  template:
+    src: log-aggregator.sh.j2
+    dest: "{{ app_home }}/scripts/log-aggregator.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [logging, scripts]
+
+- name: Create log analysis script
+  template:
+    src: log-analyzer.sh.j2
+    dest: "{{ app_home }}/scripts/log-analyzer.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [logging, scripts]
+
+- name: Configure custom logrotate rules
+  template:
+    src: custom-logrotate.j2
+    dest: "/etc/logrotate.d/{{ project_name }}"
+    mode: '0644'
+  tags: [logging, rotation]
+
+- name: Create log archival script
+  template:
+    src: log-archive.sh.j2
+    dest: "{{ app_home }}/scripts/log-archive.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [logging, archive]
+
+- name: Configure CloudWatch Logs (AWS)
+  block:
+    - name: Create CloudWatch Logs configuration
+      template:
+        src: cloudwatch-logs.json.j2
+        dest: /opt/aws/amazon-cloudwatch-agent/etc/cloudwatch-logs.json
+        mode: '0644'
+
+    - name: Create CloudWatch Logs agent configuration
+      template:
+        src: cloudwatch-logs-agent.json.j2
+        dest: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent-logs.json
+        mode: '0644'
+      notify: restart cloudwatch-agent
+
+    - name: Create log groups in CloudWatch
+      shell: |
+        aws logs create-log-group --log-group-name "/aws/ec2/{{ environment }}/{{ project_name }}/system" --region {{ region }} || true
+        aws logs create-log-group --log-group-name "/aws/ec2/{{ environment }}/{{ project_name }}/application" --region {{ region }} || true
+        aws logs create-log-group --log-group-name "/aws/ec2/{{ environment }}/{{ project_name }}/nginx" --region {{ region }} || true
+        aws logs create-log-group --log-group-name "/aws/ec2/{{ environment }}/{{ project_name }}/security" --region {{ region }} || true
+      changed_when: false
+      failed_when: false
+  when: cloudwatch_agent_enabled | default(false)
+  tags: [logging, cloudwatch]
+
+- name: Configure centralized logging
+  block:
+    - name: Create centralized logging configuration
+      template:
+        src: centralized-logging.conf.j2
+        dest: "/etc/rsyslog.d/70-centralized.conf"
+        mode: '0644'
+      notify: restart rsyslog
+
+    - name: Create log forwarding script
+      template:
+        src: log-forwarder.sh.j2
+        dest: "{{ app_home }}/scripts/log-forwarder.sh"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+
+    - name: Configure log forwarding cron job
+      cron:
+        name: "Log forwarding"
+        minute: "*/5"
+        job: "{{ app_home }}/scripts/log-forwarder.sh"
+        user: "{{ app_user }}"
+  when: centralized_logging | default(false)
+  tags: [logging, centralized]
+
+- name: Configure S3 log backup
+  block:
+    - name: Create S3 log backup script
+      template:
+        src: s3-log-backup.sh.j2
+        dest: "{{ app_home }}/scripts/s3-log-backup.sh"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+
+    - name: Configure S3 backup cron job
+      cron:
+        name: "S3 log backup"
+        minute: "0"
+        hour: "2"
+        job: "{{ app_home }}/scripts/s3-log-backup.sh"
+        user: "{{ app_user }}"
+
+    - name: Create log cleanup script
+      template:
+        src: log-cleanup.sh.j2
+        dest: "{{ app_home }}/scripts/log-cleanup.sh"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+
+    - name: Configure log cleanup cron job
+      cron:
+        name: "Log cleanup"
+        minute: "0"
+        hour: "3"
+        job: "{{ app_home }}/scripts/log-cleanup.sh"
+        user: "{{ app_user }}"
+  when: enable_s3_logging | default(false)
+  tags: [logging, s3]
+
+- name: Create log monitoring and alerting
+  block:
+    - name: Create error log monitor script
+      template:
+        src: error-log-monitor.sh.j2
+        dest: "{{ app_home }}/scripts/error-log-monitor.sh"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+
+    - name: Configure error monitoring cron job
+      cron:
+        name: "Error log monitoring"
+        minute: "*/5"
+        job: "{{ app_home }}/scripts/error-log-monitor.sh"
+        user: "{{ app_user }}"
+
+    - name: Create log alert script
+      template:
+        src: log-alert.sh.j2
+        dest: "{{ app_home }}/scripts/log-alert.sh"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+  tags: [logging, monitoring]
+
+- name: Configure log visualization
+  block:
+    - name: Create log dashboard script
+      template:
+        src: log-dashboard.sh.j2
+        dest: "{{ app_home }}/scripts/log-dashboard.sh"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+
+    - name: Create log stats generator
+      template:
+        src: log-stats.sh.j2
+        dest: "{{ app_home }}/scripts/log-stats.sh"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+
+    - name: Configure daily log report
+      cron:
+        name: "Daily log report"
+        minute: "0"
+        hour: "9"
+        job: "{{ app_home }}/scripts/log-stats.sh"
+        user: "{{ app_user }}"
+  when: environment in ['staging', 'prod']
+  tags: [logging, visualization]
+
+- name: Create security log monitoring
+  block:
+    - name: Create security log analyzer
+      template:
+        src: security-log-analyzer.sh.j2
+        dest: "{{ app_home }}/scripts/security-log-analyzer.sh"
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Configure security log monitoring
+      cron:
+        name: "Security log analysis"
+        minute: "*/10"
+        job: "{{ app_home }}/scripts/security-log-analyzer.sh"
+        user: root
+
+    - name: Create failed login monitor
+      template:
+        src: failed-login-monitor.sh.j2
+        dest: "{{ app_home }}/scripts/failed-login-monitor.sh"
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Configure failed login monitoring
+      cron:
+        name: "Failed login monitoring"
+        minute: "*/5"
+        job: "{{ app_home }}/scripts/failed-login-monitor.sh"
+        user: root
+  when: security_hardening.audit_logging | default(false)
+  tags: [logging, security]
+
+- name: Create log retention policy
+  template:
+    src: log-retention-policy.sh.j2
+    dest: "{{ app_home }}/scripts/log-retention-policy.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [logging, retention]
+
+- name: Configure log retention cron job
+  cron:
+    name: "Log retention policy"
+    minute: "0"
+    hour: "1"
+    job: "{{ app_home }}/scripts/log-retention-policy.sh"
+    user: "{{ app_user }}"
+  tags: [logging, retention, cron]
+
+- name: Create log search utility
+  template:
+    src: log-search.sh.j2
+    dest: "{{ app_home }}/scripts/log-search.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [logging, utility]
+
+- name: Create log compression script
+  template:
+    src: log-compress.sh.j2
+    dest: "{{ app_home }}/scripts/log-compress.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [logging, compression]
+
+- name: Configure log compression cron job
+  cron:
+    name: "Log compression"
+    minute: "0"
+    hour: "0"
+    job: "{{ app_home }}/scripts/log-compress.sh"
+    user: "{{ app_user }}"
+  tags: [logging, compression, cron]
+
+- name: Verify logging configuration
+  block:
+    - name: Test rsyslog configuration
+      command: rsyslogd -N1
+      register: rsyslog_test
+      changed_when: false
+      failed_when: rsyslog_test.rc != 0
+
+    - name: Test log rotation
+      command: logrotate -d /etc/logrotate.conf
+      register: logrotate_test
+      changed_when: false
+      failed_when: false
+
+    - name: Create test log entry
+      shell: logger -t "{{ project_name }}" "Logging configuration test - {{ ansible_date_time.iso8601 }}"
+      changed_when: false
+
+    - name: Verify test log entry
+      shell: grep "Logging configuration test" /var/log/syslog
+      register: test_log_entry
+      changed_when: false
+      failed_when: test_log_entry.rc != 0
+  tags: [logging, verification]
+
+- name: Display logging configuration summary
+  debug:
+    msg: |
+      Logging configuration completed:
+      - Rsyslog: {{ 'configured' if rsyslog_test.rc == 0 else 'error' }}
+      - Log rotation: configured
+      - Custom log directories: created
+      - CloudWatch Logs: {{ 'enabled' if cloudwatch_agent_enabled else 'disabled' }}
+      - S3 backup: {{ 'enabled' if enable_s3_logging else 'disabled' }}
+      - Centralized logging: {{ 'enabled' if centralized_logging else 'disabled' }}
+      - Log retention: {{ log_retention_days }} days
+      - Log monitoring: configured
+      - Test log entry: {{ 'success' if test_log_entry.rc == 0 else 'failed' }}
+  tags: [logging, summary]
+
+handlers:
+  - name: restart rsyslog
+    service:
+      name: rsyslog
+      state: restarted
+
+  - name: restart cloudwatch-agent
+    service:
+      name: amazon-cloudwatch-agent
+      state: restarted

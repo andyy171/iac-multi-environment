@@ -1,0 +1,170 @@
+- name: Initial System Setup
+  hosts: all
+  become: yes
+  gather_facts: yes
+  vars:
+    ansible_ssh_pipelining: yes
+  
+  pre_tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      tags: [always, setup]
+
+    - name: Wait for system to become reachable
+      wait_for_connection:
+        timeout: 300
+      tags: [always, setup]
+
+    - name: Gather facts after connection
+      setup:
+      tags: [always, setup]
+
+    - name: Display environment information
+      debug:
+        msg: |
+          Deploying to {{ environment | default('unknown') }} environment
+          Host: {{ ansible_host }}
+          OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          Architecture: {{ ansible_architecture }}
+      tags: [always, info]
+
+  tasks:
+    - name: Include base system configuration
+      include_tasks: base-system.yml
+      tags: [base, system]
+
+    - name: Include security hardening
+      include_tasks: security.yml
+      tags: [security]
+      when: features.security_hardening | default(true)
+
+    - name: Include web server configuration
+      include_tasks: nginx.yml
+      tags: [nginx, web]
+
+    - name: Include monitoring setup
+      include_tasks: monitoring.yml
+      tags: [monitoring]
+      when: monitoring_enabled | default(false)
+
+    - name: Include logging configuration
+      include_tasks: logging.yml
+      tags: [logging]
+      when: features.logging | default(true)
+
+    - name: Include backup configuration
+      include_tasks: backup.yml
+      tags: [backup]
+      when: backup_enabled | default(false)
+
+  post_tasks:
+    - name: Verify services are running
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - nginx
+      tags: [verification, service]
+
+    - name: Run health checks
+      include_tasks: health-check.yml
+      tags: [health, verification]
+
+    - name: Display deployment summary
+      debug:
+        msg: |
+          Deployment completed successfully for {{ environment | default('unknown') }} environment
+          Web URL: http://{{ ansible_host }}
+          Services: {{ ansible_facts.services.keys() | select('match', '^(nginx|apache2)$') | list }}
+          Uptime: {{ ansible_uptime_seconds | int // 60 }} minutes
+      tags: [always, summary]
+
+# Environment-specific post-deployment tasks
+- name: Development Environment Tasks
+  hosts: dev
+  become: yes
+  tasks:
+    - name: Install development tools
+      apt:
+        name: "{{ dev_packages }}"
+        state: present
+      when: dev_tools_enabled | default(false)
+      tags: [dev, tools]
+
+    - name: Configure development settings
+      lineinfile:
+        path: /etc/nginx/sites-available/default
+        regexp: 'server_tokens'
+        line: '    server_tokens on;'
+        backup: yes
+      notify: reload nginx
+      tags: [dev, config]
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+- name: Staging Environment Tasks
+  hosts: staging
+  become: yes
+  tasks:
+    - name: Install performance testing tools
+      apt:
+        name: "{{ performance_tools }}"
+        state: present
+      when: performance_tools is defined
+      tags: [staging, tools]
+
+    - name: Configure staging-specific settings
+      template:
+        src: staging-config.j2
+        dest: /etc/nginx/conf.d/staging.conf
+        backup: yes
+      notify: reload nginx
+      tags: [staging, config]
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+- name: Production Environment Tasks
+  hosts: prod
+  become: yes
+  tasks:
+    - name: Configure production security settings
+      lineinfile:
+        path: /etc/nginx/nginx.conf
+        regexp: 'server_tokens'
+        line: '    server_tokens off;'
+        backup: yes
+      notify: reload nginx
+      tags: [prod, security]
+
+    - name: Set up log rotation for production
+      template:
+        src: nginx-logrotate.j2
+        dest: /etc/logrotate.d/nginx
+        mode: '0644'
+      tags: [prod, logging]
+
+    - name: Configure production monitoring
+      template:
+        src: production-monitoring.j2
+        dest: /etc/cron.d/production-monitoring
+        mode: '0644'
+      when: monitoring_enabled | default(false)
+      tags: [prod, monitoring]
+
+  handlers:
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded

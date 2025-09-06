@@ -1,0 +1,237 @@
+- name: Set timezone
+  timezone:
+    name: "{{ timezone | default('UTC') }}"
+  tags: [timezone]
+
+- name: Set locale
+  locale_gen:
+    name: "{{ locale | default('en_US.UTF-8') }}"
+    state: present
+  tags: [locale]
+
+- name: Update system packages
+  apt:
+    upgrade: "{{ 'yes' if package_upgrade else 'no' }}"
+    update_cache: yes
+    cache_valid_time: 3600
+    autoremove: yes
+    autoclean: yes
+  register: apt_upgrade_result
+  tags: [packages, update]
+
+- name: Install essential packages
+  apt:
+    name: "{{ common_packages }}"
+    state: present
+    update_cache: yes
+  tags: [packages, essential]
+
+- name: Create application user
+  user:
+    name: "{{ app_user }}"
+    group: "{{ app_group }}"
+    home: "{{ app_home }}"
+    shell: /bin/bash
+    system: yes
+    create_home: yes
+  tags: [users]
+
+- name: Create application directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  loop:
+    - "{{ app_home }}"
+    - "{{ app_home }}/logs"
+    - "{{ app_home }}/backups"
+    - "{{ app_home }}/scripts"
+    - "{{ web_root }}"
+  tags: [directories]
+
+- name: Configure system limits
+  pam_limits:
+    domain: "*"
+    limit_type: "{{ item.type }}"
+    limit_item: "{{ item.item }}"
+    value: "{{ item.value }}"
+  loop:
+    - { type: 'soft', item: 'nofile', value: "{{ max_open_files }}" }
+    - { type: 'hard', item: 'nofile', value: "{{ max_open_files }}" }
+    - { type: 'soft', item: 'nproc', value: '32768' }
+    - { type: 'hard', item: 'nproc', value: '32768' }
+  tags: [limits]
+
+- name: Configure kernel parameters
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { name: 'net.core.somaxconn', value: '1024' }
+    - { name: 'net.ipv4.tcp_keepalive_time', value: '600' }
+    - { name: 'net.ipv4.tcp_keepalive_intvl', value: '60' }
+    - { name: 'net.ipv4.tcp_keepalive_probes', value: '3' }
+    - { name: 'vm.swappiness', value: '10' }
+    - { name: 'fs.file-max', value: "{{ max_open_files }}" }
+  when: features.performance_optimization | default(false)
+  tags: [kernel, performance]
+
+- name: Configure hostname
+  hostname:
+    name: "{{ environment }}-{{ project_name }}-{{ ansible_default_ipv4.address.split('.')[-1] }}"
+  tags: [hostname]
+
+- name: Update /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    line: "{{ ansible_default_ipv4.address }} {{ inventory_hostname }} {{ inventory_hostname.split('-')[0] }}"
+    regexp: "^{{ ansible_default_ipv4.address }}"
+  tags: [hosts]
+
+- name: Configure DNS
+  template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    backup: yes
+    mode: '0644'
+  when: custom_dns_servers is defined
+  tags: [dns]
+
+- name: Install Python packages
+  pip:
+    name:
+      - boto3
+      - awscli
+      - requests
+    state: present
+    executable: pip3
+  tags: [python, packages]
+
+- name: Configure AWS CLI (if credentials exist)
+  block:
+    - name: Create .aws directory for app user
+      file:
+        path: "{{ app_home }}/.aws"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0700'
+
+    - name: Configure AWS CLI region
+      ini_file:
+        path: "{{ app_home }}/.aws/config"
+        section: default
+        option: region
+        value: "{{ region | default('ap-southeast-1') }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0600'
+  tags: [aws]
+
+- name: Set up log directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: syslog
+    group: adm
+    mode: '0755'
+  loop:
+    - /var/log/{{ project_name }}
+    - /var/log/{{ project_name }}/nginx
+    - /var/log/{{ project_name }}/application
+  tags: [logging, directories]
+
+- name: Configure logrotate
+  template:
+    src: logrotate.j2
+    dest: /etc/logrotate.d/{{ project_name }}
+    mode: '0644'
+  when: log_rotation_enabled | default(true)
+  tags: [logging, rotation]
+
+- name: Set up system monitoring script
+  template:
+    src: system-monitor.sh.j2
+    dest: "{{ app_home }}/scripts/system-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, scripts]
+
+- name: Configure system monitoring cron job
+  cron:
+    name: "System monitoring"
+    minute: "*/5"
+    job: "{{ app_home }}/scripts/system-monitor.sh"
+    user: "{{ app_user }}"
+  when: monitoring_enabled | default(false)
+  tags: [monitoring, cron]
+
+- name: Install and configure NTP
+  block:
+    - name: Install NTP
+      apt:
+        name: ntp
+        state: present
+
+    - name: Configure NTP servers
+      template:
+        src: ntp.conf.j2
+        dest: /etc/ntp.conf
+        backup: yes
+      notify: restart ntp
+
+    - name: Start and enable NTP service
+      service:
+        name: ntp
+        state: started
+        enabled: yes
+  tags: [ntp, time]
+
+- name: Configure environment variables
+  template:
+    src: environment.j2
+    dest: /etc/environment
+    backup: yes
+    mode: '0644'
+  tags: [environment]
+
+- name: Create maintenance script
+  template:
+    src: maintenance.sh.j2
+    dest: "{{ app_home }}/scripts/maintenance.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [maintenance, scripts]
+
+- name: Configure system information script
+  template:
+    src: system-info.sh.j2
+    dest: "{{ app_home }}/scripts/system-info.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [info, scripts]
+
+- name: Display system setup summary
+  debug:
+    msg: |
+      Base system configuration completed:
+      - Timezone: {{ timezone | default('UTC') }}
+      - App User: {{ app_user }}
+      - App Home: {{ app_home }}
+      - Packages updated: {{ apt_upgrade_result.changed }}
+      - Essential packages installed
+      - System limits configured
+  tags: [summary]
+
+handlers:
+  - name: restart ntp
+    service:
+      name: ntp
+      state: restarted

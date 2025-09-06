@@ -1,0 +1,357 @@
+- name: Check system resources
+  block:
+    - name: Check disk space
+      shell: df -h | grep -vE '^Filesystem|tmpfs|cdrom|udev'
+      register: disk_usage
+      changed_when: false
+
+    - name: Check memory usage
+      shell: free -h
+      register: memory_usage
+      changed_when: false
+
+    - name: Check CPU load
+      shell: uptime
+      register: cpu_load
+      changed_when: false
+
+    - name: Check running processes
+      shell: ps aux | wc -l
+      register: process_count
+      changed_when: false
+
+    - name: Display system resources
+      debug:
+        msg: |
+          System Resources:
+          Disk Usage:
+          {{ disk_usage.stdout }}
+          
+          Memory Usage:
+          {{ memory_usage.stdout }}
+          
+          CPU Load:
+          {{ cpu_load.stdout }}
+          
+          Process Count: {{ process_count.stdout }}
+  tags: [health, system, resources]
+
+- name: Check critical services
+  block:
+    - name: Check Nginx service status
+      service_facts:
+      
+    - name: Verify Nginx is running
+      assert:
+        that:
+          - ansible_facts.services['nginx.service']['state'] == 'running'
+        fail_msg: "Nginx service is not running"
+        success_msg: "Nginx service is healthy"
+
+    - name: Check SSH service status
+      assert:
+        that:
+          - ansible_facts.services['ssh.service']['state'] == 'running'
+        fail_msg: "SSH service is not running"
+        success_msg: "SSH service is healthy"
+
+    - name: Check rsyslog service status
+      assert:
+        that:
+          - ansible_facts.services['rsyslog.service']['state'] == 'running'
+        fail_msg: "Rsyslog service is not running"
+        success_msg: "Rsyslog service is healthy"
+
+    - name: Check cron service status
+      assert:
+        that:
+          - ansible_facts.services['cron.service']['state'] == 'running'
+        fail_msg: "Cron service is not running"
+        success_msg: "Cron service is healthy"
+  tags: [health, services]
+
+- name: Check network connectivity
+  block:
+    - name: Check internet connectivity
+      uri:
+        url: http://www.google.com
+        method: HEAD
+        status_code: 200
+        timeout: 10
+      register: internet_check
+
+    - name: Check DNS resolution
+      command: nslookup google.com
+      register: dns_check
+      changed_when: false
+
+    - name: Check AWS metadata service
+      uri:
+        url: http://169.254.169.254/latest/meta-data/instance-id
+        method: GET
+        timeout: 5
+      register: aws_metadata
+      failed_when: false
+
+    - name: Display network status
+      debug:
+        msg: |
+          Network Health:
+          - Internet connectivity: {{ 'OK' if internet_check.status == 200 else 'FAILED' }}
+          - DNS resolution: {{ 'OK' if dns_check.rc == 0 else 'FAILED' }}
+          - AWS metadata: {{ 'OK' if aws_metadata.status == 200 else 'NOT AVAILABLE' }}
+  tags: [health, network]
+
+- name: Check web server health
+  block:
+    - name: Test web server response
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}"
+        method: GET
+        status_code: 200
+        timeout: 10
+      register: web_response
+
+    - name: Test health check endpoint
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}/health"
+        method: GET
+        status_code: 200
+        timeout: 5
+      register: health_endpoint
+      failed_when: false
+
+    - name: Test status endpoint
+      uri:
+        url: "http://{{ ansible_default_ipv4.address }}/status"
+        method: GET
+        timeout: 5
+      register: status_endpoint
+      failed_when: false
+
+    - name: Check Nginx configuration syntax
+      command: nginx -t
+      register: nginx_syntax
+      changed_when: false
+
+    - name: Display web server health
+      debug:
+        msg: |
+          Web Server Health:
+          - Main page: {{ 'OK' if web_response.status == 200 else 'FAILED' }}
+          - Health endpoint: {{ 'OK' if health_endpoint.status == 200 else 'FAILED' }}
+          - Status endpoint: {{ 'OK' if status_endpoint.status == 200 else 'FAILED' }}
+          - Nginx config: {{ 'OK' if nginx_syntax.rc == 0 else 'FAILED' }}
+          - Response time: {{ web_response.elapsed }}s
+  tags: [health, web]
+
+- name: Check file system health
+  block:
+    - name: Check critical directories exist
+      stat:
+        path: "{{ item }}"
+      register: critical_dirs
+      loop:
+        - "{{ app_home }}"
+        - "{{ web_root }}"
+        - "/var/log/nginx"
+        - "/etc/nginx"
+        - "/var/log/{{ project_name }}"
+
+    - name: Verify critical directories
+      assert:
+        that:
+          - item.stat.exists
+          - item.stat.isdir
+        fail_msg: "Critical directory {{ item.item }} is missing"
+      loop: "{{ critical_dirs.results }}"
+
+    - name: Check disk space thresholds
+      shell: df / | awk 'NR==2 {print $5}' | sed 's/%//'
+      register: root_disk_usage
+      changed_when: false
+
+    - name: Alert if disk space is high
+      debug:
+        msg: "WARNING: Root disk usage is {{ root_disk_usage.stdout }}%"
+      when: root_disk_usage.stdout | int > disk_space_threshold | default(80)
+
+    - name: Check file permissions on critical files
+      stat:
+        path: "{{ item }}"
+      register: critical_files
+      loop:
+        - /etc/passwd
+        - /etc/shadow
+        - /etc/ssh/sshd_config
+        - /etc/nginx/nginx.conf
+
+    - name: Display file system health
+      debug:
+        msg: |
+          File System Health:
+          - Root disk usage: {{ root_disk_usage.stdout }}%
+          - Critical directories: present
+          - Critical files: accessible
+  tags: [health, filesystem]
+
+- name: Check security status
+  block:
+    - name: Check UFW status
+      command: ufw status
+      register: ufw_status
+      changed_when: false
+      failed_when: false
+
+    - name: Check fail2ban status
+      command: fail2ban-client status
+      register: fail2ban_status
+      changed_when: false
+      failed_when: false
+      when: fail2ban_enabled | default(true)
+
+    - name: Check for unauthorized users
+      shell: awk -F: '$3 >= 1000 && $3 < 65534 {print $1}' /etc/passwd
+      register: user_accounts
+      changed_when: false
+
+    - name: Check SSH configuration
+      shell: sshd -T | grep -E '^(permitrootlogin|passwordauthentication)'
+      register: ssh_config
+      changed_when: false
+
+    - name: Display security status
+      debug:
+        msg: |
+          Security Status:
+          - UFW firewall: {{ 'active' if 'Status: active' in ufw_status.stdout else 'inactive' }}
+          - Fail2ban: {{ 'active' if fail2ban_status.rc == 0 else 'inactive' }}
+          - User accounts: {{ user_accounts.stdout_lines | length }}
+          - SSH config: {{ ssh_config.stdout_lines | join(', ') }}
+  tags: [health, security]
+
+- name: Check log health
+  block:
+    - name: Check log file sizes
+      shell: du -sh /var/log/* | sort -hr | head -10
+      register: log_sizes
+      changed_when: false
+
+    - name: Check for error patterns in logs
+      shell: |
+        tail -100 /var/log/syslog | grep -i error | wc -l
+      register: recent_errors
+      changed_when: false
+
+    - name: Check log rotation status
+      shell: logrotate -d /etc/logrotate.conf 2>&1 | grep -E 'error|fail' | wc -l
+      register: logrotate_errors
+      changed_when: false
+
+    - name: Display log health
+      debug:
+        msg: |
+          Log Health:
+          - Recent errors: {{ recent_errors.stdout }}
+          - Logrotate errors: {{ logrotate_errors.stdout }}
+          - Largest logs:
+          {{ log_sizes.stdout }}
+  tags: [health, logs]
+
+- name: Check backup status
+  block:
+    - name: Check backup directory
+      stat:
+        path: "{{ app_home }}/backups"
+      register: backup_dir
+
+    - name: Check recent backups
+      find:
+        paths: "{{ app_home }}/backups"
+        age: -1d
+        file_type: file
+      register: recent_backups
+      when: backup_dir.stat.exists
+
+    - name: Check backup disk usage
+      shell: du -sh {{ app_home }}/backups
+      register: backup_size
+      changed_when: false
+      when: backup_dir.stat.exists
+
+    - name: Display backup status
+      debug:
+        msg: |
+          Backup Status:
+          - Backup directory: {{ 'exists' if backup_dir.stat.exists else 'missing' }}
+          - Recent backups: {{ recent_backups.matched | default(0) }} files
+          - Backup size: {{ backup_size.stdout | default('N/A') }}
+  when: backup_enabled | default(false)
+  tags: [health, backup]
+
+- name: Performance health check
+  block:
+    - name: Check system load average
+      shell: cat /proc/loadavg
+      register: load_avg
+      changed_when: false
+
+    - name: Check memory pressure
+      shell: cat /proc/meminfo | grep -E '^(MemTotal|MemFree|MemAvailable):'
+      register: memory_info
+      changed_when: false
+
+    - name: Check I/O wait
+      shell: iostat 1 3 | tail -1 | awk '{print $4}'
+      register: io_wait
+      changed_when: false
+      failed_when: false
+
+    - name: Check network connections
+      shell: ss -tuln | grep LISTEN | wc -l
+      register: listening_ports
+      changed_when: false
+
+    - name: Display performance metrics
+      debug:
+        msg: |
+          Performance Metrics:
+          - Load average: {{ load_avg.stdout }}
+          - Memory info:
+          {{ memory_info.stdout }}
+          - I/O wait: {{ io_wait.stdout | default('N/A') }}%
+          - Listening ports: {{ listening_ports.stdout }}
+  tags: [health, performance]
+
+- name: Generate health report
+  block:
+    - name: Create health report
+      template:
+        src: health-report.j2
+        dest: "{{ app_home }}/health-report-{{ ansible_date_time.epoch }}.txt"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0644'
+      vars:
+        health_data:
+          disk_usage: "{{ disk_usage.stdout }}"
+          memory_usage: "{{ memory_usage.stdout }}"
+          cpu_load: "{{ cpu_load.stdout }}"
+          web_response_time: "{{ web_response.elapsed }}"
+          recent_errors: "{{ recent_errors.stdout }}"
+          system_uptime: "{{ ansible_uptime_seconds }}"
+
+    - name: Display health summary
+      debug:
+        msg: |
+          Overall Health Status: {{ 'HEALTHY' if (web_response.status == 200 and nginx_syntax.rc == 0) else 'ISSUES DETECTED' }}
+          
+          Key Metrics:
+          - Web server: {{ 'UP' if web_response.status == 200 else 'DOWN' }}
+          - System load: {{ load_avg.stdout.split()[0] }}
+          - Disk usage: {{ root_disk_usage.stdout }}%
+          - Recent errors: {{ recent_errors.stdout }}
+          - Uptime: {{ (ansible_uptime_seconds | int // 3600) }} hours
+          
+          Report saved to: {{ app_home }}/health-report-{{ ansible_date_time.epoch }}.txt
+  tags: [health, report]

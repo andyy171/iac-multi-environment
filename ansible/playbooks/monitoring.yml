@@ -1,0 +1,338 @@
+- name: Install monitoring packages
+  apt:
+    name:
+      - htop
+      - iotop
+      - nethogs
+      - sysstat
+      - dstat
+      - vmstat
+      - iostat
+      - netstat-nat
+      - tcpdump
+      - nmap
+    state: present
+  tags: [monitoring, packages]
+
+- name: Configure system statistics collection
+  lineinfile:
+    path: /etc/default/sysstat
+    regexp: '^ENABLED'
+    line: 'ENABLED="true"'
+    backup: yes
+  notify: restart sysstat
+  tags: [monitoring, sysstat]
+
+- name: Install CloudWatch agent (AWS)
+  block:
+    - name: Download CloudWatch agent
+      get_url:
+        url: https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
+        dest: /tmp/amazon-cloudwatch-agent.deb
+        mode: '0644'
+
+    - name: Install CloudWatch agent
+      apt:
+        deb: /tmp/amazon-cloudwatch-agent.deb
+        state: present
+
+    - name: Create CloudWatch agent configuration
+      template:
+        src: cloudwatch-agent.json.j2
+        dest: /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+        mode: '0644'
+      notify: restart cloudwatch-agent
+
+    - name: Start and enable CloudWatch agent
+      service:
+        name: amazon-cloudwatch-agent
+        state: started
+        enabled: yes
+  when: cloudwatch_agent_enabled | default(false)
+  tags: [monitoring, cloudwatch]
+
+- name: Create monitoring directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  loop:
+    - "{{ app_home }}/monitoring"
+    - "{{ app_home }}/monitoring/logs"
+    - "{{ app_home }}/monitoring/scripts"
+    - "{{ app_home }}/monitoring/data"
+  tags: [monitoring, directories]
+
+- name: Create system resource monitoring script
+  template:
+    src: resource-monitor.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/resource-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, scripts]
+
+- name: Create disk space monitoring script
+  template:
+    src: disk-monitor.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/disk-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, scripts]
+
+- name: Create service monitoring script
+  template:
+    src: service-monitor.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/service-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, scripts]
+
+- name: Create network monitoring script
+  template:
+    src: network-monitor.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/network-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, scripts]
+
+- name: Create log monitoring script
+  template:
+    src: log-monitor.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/log-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, scripts]
+
+- name: Create performance monitoring script
+  template:
+    src: performance-monitor.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/performance-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, scripts]
+
+- name: Create alert script
+  template:
+    src: alert.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/alert.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, alerts]
+
+- name: Create monitoring dashboard script
+  template:
+    src: dashboard.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/dashboard.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, dashboard]
+
+- name: Configure monitoring cron jobs
+  cron:
+    name: "{{ item.name }}"
+    minute: "{{ item.minute }}"
+    hour: "{{ item.hour | default('*') }}"
+    job: "{{ item.job }}"
+    user: "{{ app_user }}"
+  loop:
+    - name: "Resource monitoring"
+      minute: "*/5"
+      job: "{{ app_home }}/monitoring/scripts/resource-monitor.sh"
+    - name: "Disk space monitoring"
+      minute: "*/10"
+      job: "{{ app_home }}/monitoring/scripts/disk-monitor.sh"
+    - name: "Service monitoring"
+      minute: "*/2"
+      job: "{{ app_home }}/monitoring/scripts/service-monitor.sh"
+    - name: "Network monitoring"
+      minute: "*/5"
+      job: "{{ app_home }}/monitoring/scripts/network-monitor.sh"
+    - name: "Log monitoring"
+      minute: "*/15"
+      job: "{{ app_home }}/monitoring/scripts/log-monitor.sh"
+    - name: "Performance monitoring"
+      minute: "0"
+      hour: "*"
+      job: "{{ app_home }}/monitoring/scripts/performance-monitor.sh"
+  tags: [monitoring, cron]
+
+- name: Configure log rotation for monitoring logs
+  template:
+    src: monitoring-logrotate.j2
+    dest: /etc/logrotate.d/monitoring
+    mode: '0644'
+  tags: [monitoring, logrotate]
+
+- name: Install Node Exporter (if Prometheus monitoring enabled)
+  block:
+    - name: Create node_exporter user
+      user:
+        name: node_exporter
+        system: yes
+        shell: /bin/false
+        home: /var/lib/node_exporter
+        create_home: no
+
+    - name: Download Node Exporter
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v1.6.1/node_exporter-1.6.1.linux-amd64.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+        mode: '0644'
+
+    - name: Extract Node Exporter
+      unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /tmp
+        remote_src: yes
+        creates: /tmp/node_exporter-1.6.1.linux-amd64
+
+    - name: Install Node Exporter binary
+      copy:
+        src: /tmp/node_exporter-1.6.1.linux-amd64/node_exporter
+        dest: /usr/local/bin/node_exporter
+        mode: '0755'
+        owner: root
+        group: root
+        remote_src: yes
+
+    - name: Create Node Exporter systemd service
+      template:
+        src: node-exporter.service.j2
+        dest: /etc/systemd/system/node_exporter.service
+        mode: '0644'
+      notify: 
+        - systemd reload
+        - restart node-exporter
+
+    - name: Start and enable Node Exporter
+      service:
+        name: node_exporter
+        state: started
+        enabled: yes
+  when: node_exporter_enabled | default(false)
+  tags: [monitoring, node-exporter]
+
+- name: Create monitoring configuration file
+  template:
+    src: monitoring.conf.j2
+    dest: "{{ app_home }}/monitoring/monitoring.conf"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  tags: [monitoring, config]
+
+- name: Create health check script
+  template:
+    src: health-check.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/health-check.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, health]
+
+- name: Configure health check cron job
+  cron:
+    name: "Health check"
+    minute: "*/1"
+    job: "{{ app_home }}/monitoring/scripts/health-check.sh"
+    user: "{{ app_user }}"
+  when: health_check_enabled | default(true)
+  tags: [monitoring, health, cron]
+
+- name: Create monitoring report script
+  template:
+    src: monitoring-report.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/monitoring-report.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, reports]
+
+- name: Configure daily monitoring report
+  cron:
+    name: "Daily monitoring report"
+    minute: "0"
+    hour: "8"
+    job: "{{ app_home }}/monitoring/scripts/monitoring-report.sh"
+    user: "{{ app_user }}"
+  when: environment in ['staging', 'prod']
+  tags: [monitoring, reports, cron]
+
+- name: Create threshold monitoring script
+  template:
+    src: threshold-monitor.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/threshold-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, thresholds]
+
+- name: Configure threshold monitoring
+  cron:
+    name: "Threshold monitoring"
+    minute: "*/3"
+    job: "{{ app_home }}/monitoring/scripts/threshold-monitor.sh"
+    user: "{{ app_user }}"
+  when: monitoring_thresholds is defined
+  tags: [monitoring, thresholds, cron]
+
+- name: Create monitoring status page
+  template:
+    src: monitoring-status.html.j2
+    dest: "{{ web_root }}/monitoring"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  tags: [monitoring, web]
+
+- name: Create monitoring API endpoint
+  template:
+    src: monitoring-api.sh.j2
+    dest: "{{ app_home }}/monitoring/scripts/monitoring-api.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [monitoring, api]
+
+- name: Display monitoring setup summary
+  debug:
+    msg: |
+      Monitoring setup completed:
+      - System statistics: {{ 'enabled' if ansible_facts.services['sysstat'].state == 'running' else 'disabled' }}
+      - CloudWatch agent: {{ 'enabled' if cloudwatch_agent_enabled else 'disabled' }}
+      - Node Exporter: {{ 'enabled' if node_exporter_enabled else 'disabled' }}
+      - Health checks: {{ 'enabled' if health_check_enabled else 'disabled' }}
+      - Monitoring scripts: installed
+      - Cron jobs: configured
+      - Monitoring dashboard: available at http://{{ ansible_host }}/monitoring
+  tags: [monitoring, summary]
+
+handlers:
+  - name: restart sysstat
+    service:
+      name: sysstat
+      state: restarted
+
+  - name: restart cloudwatch-agent
+    service:
+      name: amazon-cloudwatch-agent
+      state: restarted
+
+  - name: systemd reload
+    systemd:
+      daemon_reload: yes
+
+  - name: restart node-exporter
+    service:
+      name: node_exporter
+      state: restarted

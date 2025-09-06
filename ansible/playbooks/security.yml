@@ -1,0 +1,361 @@
+- name: Update all packages for security
+  apt:
+    upgrade: dist
+    update_cache: yes
+    autoremove: yes
+    autoclean: yes
+  when: environment != 'dev'
+  tags: [security, updates]
+
+- name: Install security packages
+  apt:
+    name:
+      - ufw
+      - fail2ban
+      - unattended-upgrades
+      - apt-listchanges
+      - logwatch
+      - rkhunter
+      - chkrootkit
+    state: present
+  tags: [security, packages]
+
+- name: Configure automatic security updates
+  template:
+    src: 50unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    backup: yes
+    mode: '0644'
+  tags: [security, updates]
+
+- name: Enable unattended upgrades
+  template:
+    src: 20auto-upgrades.j2
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    mode: '0644'
+  tags: [security, updates]
+
+- name: Configure SSH security
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    backup: yes
+  loop:
+    - { regexp: '^PermitRootLogin', line: 'PermitRootLogin no' }
+    - { regexp: '^PasswordAuthentication', line: 'PasswordAuthentication no' }
+    - { regexp: '^PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+    - { regexp: '^AuthorizedKeysFile', line: 'AuthorizedKeysFile .ssh/authorized_keys' }
+    - { regexp: '^PermitEmptyPasswords', line: 'PermitEmptyPasswords no' }
+    - { regexp: '^X11Forwarding', line: 'X11Forwarding no' }
+    - { regexp: '^MaxAuthTries', line: 'MaxAuthTries 3' }
+    - { regexp: '^ClientAliveInterval', line: 'ClientAliveInterval 300' }
+    - { regexp: '^ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
+    - { regexp: '^Protocol', line: 'Protocol 2' }
+  when: disable_root_login | default(true)
+  notify: restart ssh
+  tags: [security, ssh]
+
+- name: Configure UFW firewall
+  block:
+    - name: Set UFW default policies
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      loop:
+        - { direction: 'incoming', policy: 'deny' }
+        - { direction: 'outgoing', policy: 'allow' }
+
+    - name: Configure UFW rules
+      ufw:
+        rule: "{{ item.rule }}"
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
+        src: "{{ item.src | default(omit) }}"
+        comment: "{{ item.comment | default(omit) }}"
+      loop: "{{ ufw_rules | default([]) }}"
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        logging: "on"
+  when: ufw_enabled | default(true)
+  tags: [security, firewall]
+
+- name: Configure Fail2Ban
+  block:
+    - name: Create Fail2Ban jail configuration
+      template:
+        src: jail.local.j2
+        dest: /etc/fail2ban/jail.local
+        backup: yes
+        mode: '0644'
+      notify: restart fail2ban
+
+    - name: Create custom Fail2Ban filter for nginx
+      template:
+        src: nginx-noscript.conf.j2
+        dest: /etc/fail2ban/filter.d/nginx-noscript.conf
+        mode: '0644'
+      notify: restart fail2ban
+
+    - name: Start and enable Fail2Ban
+      service:
+        name: fail2ban
+        state: started
+        enabled: yes
+  when: fail2ban_enabled | default(true)
+  tags: [security, fail2ban]
+
+- name: Secure shared memory
+  mount:
+    path: /run/shm
+    src: tmpfs
+    fstype: tmpfs
+    opts: defaults,noexec,nosuid
+    state: mounted
+  when: security_hardening.kernel_hardening | default(false)
+  tags: [security, kernel]
+
+- name: Configure kernel security parameters
+  sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+  loop:
+    - { name: 'net.ipv4.conf.default.rp_filter', value: '1' }
+    - { name: 'net.ipv4.conf.all.rp_filter', value: '1' }
+    - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+    - { name: 'net.ipv6.conf.all.accept_redirects', value: '0' }
+    - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
+    - { name: 'net.ipv4.conf.all.accept_source_route', value: '0' }
+    - { name: 'net.ipv6.conf.all.accept_source_route', value: '0' }
+    - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
+    - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+    - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+    - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+    - { name: 'kernel.exec-shield', value: '1' }
+    - { name: 'kernel.randomize_va_space', value: '2' }
+  when: security_hardening.kernel_hardening | default(false)
+  tags: [security, kernel]
+
+- name: Set secure file permissions
+  file:
+    path: "{{ item.path }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: '/etc/passwd', mode: '0644' }
+    - { path: '/etc/group', mode: '0644' }
+    - { path: '/etc/shadow', mode: '0640' }
+    - { path: '/etc/gshadow', mode: '0640' }
+    - { path: '/etc/ssh/sshd_config', mode: '0600' }
+    - { path: '/boot/grub/grub.cfg', mode: '0600' }
+  when: security_hardening.file_permissions_strict | default(false)
+  tags: [security, permissions]
+
+- name: Remove unnecessary packages
+  apt:
+    name:
+      - telnet
+      - rsh-client
+      - rsh-redone-client
+      - talk
+      - talkd
+    state: absent
+    purge: yes
+  when: security_hardening.disable_unused_services | default(false)
+  tags: [security, packages]
+
+- name: Disable unused services
+  service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: no
+  loop:
+    - avahi-daemon
+    - cups
+    - nfs-common
+    - rpcbind
+  failed_when: false
+  when: security_hardening.disable_unused_services | default(false)
+  tags: [security, services]
+
+- name: Configure audit logging
+  block:
+    - name: Install auditd
+      apt:
+        name: auditd
+        state: present
+
+    - name: Configure audit rules
+      template:
+        src: audit.rules.j2
+        dest: /etc/audit/rules.d/audit.rules
+        mode: '0640'
+      notify: restart auditd
+
+    - name: Start and enable auditd
+      service:
+        name: auditd
+        state: started
+        enabled: yes
+  when: audit_logging | default(false)
+  tags: [security, audit]
+
+- name: Configure logwatch
+  block:
+    - name: Configure logwatch settings
+      template:
+        src: logwatch.conf.j2
+        dest: /etc/logwatch/conf/logwatch.conf
+        mode: '0644'
+
+    - name: Create logwatch cron job
+      cron:
+        name: "Daily logwatch report"
+        minute: "0"
+        hour: "6"
+        job: "/usr/sbin/logwatch --output mail --mailto root --detail high"
+        user: root
+  when: environment == 'prod'
+  tags: [security, logging]
+
+- name: Configure intrusion detection
+  block:
+    - name: Configure rkhunter
+      template:
+        src: rkhunter.conf.j2
+        dest: /etc/rkhunter.conf
+        backup: yes
+        mode: '0644'
+
+    - name: Update rkhunter database
+      command: rkhunter --update
+      changed_when: false
+
+    - name: Create rkhunter cron job
+      cron:
+        name: "Weekly rkhunter scan"
+        minute: "0"
+        hour: "3"
+        weekday: "0"
+        job: "rkhunter --cronjob --update --quiet"
+        user: root
+
+    - name: Configure chkrootkit cron job
+      cron:
+        name: "Weekly chkrootkit scan"
+        minute: "30"
+        hour: "3"
+        weekday: "0"
+        job: "chkrootkit | mail -s 'chkrootkit report' root"
+        user: root
+  when: security_hardening.intrusion_detection | default(false)
+  tags: [security, intrusion]
+
+- name: Create security monitoring script
+  template:
+    src: security-monitor.sh.j2
+    dest: "{{ app_home }}/scripts/security-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [security, monitoring]
+
+- name: Configure security monitoring cron job
+  cron:
+    name: "Security monitoring"
+    minute: "*/15"
+    job: "{{ app_home }}/scripts/security-monitor.sh"
+    user: root
+  when: monitoring_enabled | default(false)
+  tags: [security, monitoring]
+
+- name: Create password policy
+  template:
+    src: pwquality.conf.j2
+    dest: /etc/security/pwquality.conf
+    backup: yes
+    mode: '0644'
+  when: environment == 'prod'
+  tags: [security, password]
+
+- name: Configure login security
+  template:
+    src: login.defs.j2
+    dest: /etc/login.defs
+    backup: yes
+    mode: '0644'
+  when: environment == 'prod'
+  tags: [security, login]
+
+- name: Set up security alerts
+  template:
+    src: security-alert.sh.j2
+    dest: "{{ app_home }}/scripts/security-alert.sh"
+    owner: root
+    group: root
+    mode: '0755'
+  tags: [security, alerts]
+
+- name: Check for rootkits
+  command: "{{ item }}"
+  loop:
+    - rkhunter --check --sk --quiet
+    - chkrootkit
+  register: rootkit_check
+  changed_when: false
+  failed_when: false
+  when: 
+    - security_hardening.intrusion_detection | default(false)
+    - environment == 'prod'
+  tags: [security, scan]
+
+- name: Display security scan results
+  debug:
+    msg: |
+      Security scan completed:
+      - RKHunter: {{ 'CLEAN' if rootkit_check.results[0].rc == 0 else 'ISSUES FOUND' }}
+      - Chkrootkit: {{ 'CLEAN' if rootkit_check.results[1].rc == 0 else 'ISSUES FOUND' }}
+  when: 
+    - rootkit_check is defined
+    - rootkit_check.results is defined
+  tags: [security, scan]
+
+- name: Create security summary report
+  template:
+    src: security-summary.j2
+    dest: "{{ app_home }}/security-summary.txt"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  tags: [security, summary]
+
+- name: Display security configuration summary
+  debug:
+    msg: |
+      Security hardening completed:
+      - SSH hardened: {{ disable_root_login | default(true) }}
+      - Firewall enabled: {{ ufw_enabled | default(true) }}
+      - Fail2Ban active: {{ fail2ban_enabled | default(true) }}
+      - Automatic updates: {{ environment != 'dev' }}
+      - Audit logging: {{ audit_logging | default(false) }}
+      - Intrusion detection: {{ security_hardening.intrusion_detection | default(false) }}
+  tags: [security, summary]
+
+handlers:
+  - name: restart ssh
+    service:
+      name: ssh
+      state: restarted
+
+  - name: restart fail2ban
+    service:
+      name: fail2ban
+      state: restarted
+
+  - name: restart auditd
+    service:
+      name: auditd
+      state: restarted

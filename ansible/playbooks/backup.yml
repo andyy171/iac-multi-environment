@@ -1,0 +1,343 @@
+- name: Install backup packages
+  apt:
+    name:
+      - rsync
+      - tar
+      - gzip
+      - awscli
+      - duplicity
+      - cron-apt
+    state: present
+  tags: [backup, packages]
+
+- name: Create backup directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  loop:
+    - "{{ app_home }}/backups"
+    - "{{ app_home }}/backups/system"
+    - "{{ app_home }}/backups/application"
+    - "{{ app_home }}/backups/logs"
+    - "{{ app_home }}/backups/database"
+    - "{{ app_home }}/backups/scripts"
+  tags: [backup, directories]
+
+- name: Create system backup script
+  template:
+    src: system-backup.sh.j2
+    dest: "{{ app_home }}/scripts/system-backup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, scripts]
+
+- name: Create application backup script
+  template:
+    src: app-backup.sh.j2
+    dest: "{{ app_home }}/scripts/app-backup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, scripts]
+
+- name: Create configuration backup script
+  template:
+    src: config-backup.sh.j2
+    dest: "{{ app_home }}/scripts/config-backup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, scripts]
+
+- name: Create log backup script
+  template:
+    src: log-backup.sh.j2
+    dest: "{{ app_home }}/scripts/log-backup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, scripts]
+
+- name: Create S3 backup script
+  template:
+    src: s3-backup.sh.j2
+    dest: "{{ app_home }}/scripts/s3-backup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: enable_s3_logging | default(false)
+  tags: [backup, s3]
+
+- name: Create backup verification script
+  template:
+    src: backup-verify.sh.j2
+    dest: "{{ app_home }}/scripts/backup-verify.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, verification]
+
+- name: Create backup restoration script
+  template:
+    src: backup-restore.sh.j2
+    dest: "{{ app_home }}/scripts/backup-restore.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, restore]
+
+- name: Create backup cleanup script
+  template:
+    src: backup-cleanup.sh.j2
+    dest: "{{ app_home }}/scripts/backup-cleanup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, cleanup]
+
+- name: Create backup monitoring script
+  template:
+    src: backup-monitor.sh.j2
+    dest: "{{ app_home }}/scripts/backup-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, monitoring]
+
+- name: Configure backup cron jobs
+  cron:
+    name: "{{ item.name }}"
+    minute: "{{ item.minute }}"
+    hour: "{{ item.hour }}"
+    day: "{{ item.day | default('*') }}"
+    job: "{{ item.job }}"
+    user: "{{ app_user }}"
+  loop:
+    - name: "System configuration backup"
+      minute: "0"
+      hour: "2"
+      job: "{{ app_home }}/scripts/config-backup.sh"
+    - name: "Application backup"
+      minute: "30"
+      hour: "2"
+      job: "{{ app_home }}/scripts/app-backup.sh"
+    - name: "Log backup"
+      minute: "0"
+      hour: "3"
+      job: "{{ app_home }}/scripts/log-backup.sh"
+    - name: "S3 sync backup"
+      minute: "0"
+      hour: "4"
+      job: "{{ app_home }}/scripts/s3-backup.sh"
+      when: "{{ enable_s3_logging | default(false) }}"
+    - name: "Backup verification"
+      minute: "0"
+      hour: "5"
+      job: "{{ app_home }}/scripts/backup-verify.sh"
+    - name: "Backup cleanup"
+      minute: "0"
+      hour: "6"
+      day: "0"
+      job: "{{ app_home }}/scripts/backup-cleanup.sh"
+  when: item.when | default(true)
+  tags: [backup, cron]
+
+- name: Create AWS snapshot backup script (for production)
+  template:
+    src: aws-snapshot.sh.j2
+    dest: "{{ app_home }}/scripts/aws-snapshot.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: environment == 'prod'
+  tags: [backup, aws, snapshot]
+
+- name: Configure AWS snapshot cron job
+  cron:
+    name: "AWS EBS snapshot"
+    minute: "0"
+    hour: "1"
+    job: "{{ app_home }}/scripts/aws-snapshot.sh"
+    user: "{{ app_user }}"
+  when: 
+    - environment == 'prod'
+    - snapshot_enabled | default(false)
+  tags: [backup, aws, snapshot, cron]
+
+- name: Create database backup script (if database exists)
+  template:
+    src: database-backup.sh.j2
+    dest: "{{ app_home }}/scripts/database-backup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: enable_database | default(false)
+  tags: [backup, database]
+
+- name: Configure database backup cron job
+  cron:
+    name: "Database backup"
+    minute: "30"
+    hour: "1"
+    job: "{{ app_home }}/scripts/database-backup.sh"
+    user: "{{ app_user }}"
+  when: 
+    - enable_database | default(false)
+    - db_backup_enabled | default(false)
+  tags: [backup, database, cron]
+
+- name: Create disaster recovery plan document
+  template:
+    src: disaster-recovery-plan.md.j2
+    dest: "{{ app_home }}/disaster-recovery-plan.md"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  tags: [backup, disaster-recovery]
+
+- name: Create backup report script
+  template:
+    src: backup-report.sh.j2
+    dest: "{{ app_home }}/scripts/backup-report.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, reports]
+
+- name: Configure weekly backup report
+  cron:
+    name: "Weekly backup report"
+    minute: "0"
+    hour: "8"
+    weekday: "1"
+    job: "{{ app_home }}/scripts/backup-report.sh"
+    user: "{{ app_user }}"
+  when: environment in ['staging', 'prod']
+  tags: [backup, reports, cron]
+
+- name: Create backup encryption script
+  template:
+    src: backup-encrypt.sh.j2
+    dest: "{{ app_home }}/scripts/backup-encrypt.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: enable_encryption | default(false)
+  tags: [backup, encryption]
+
+- name: Create backup test script
+  template:
+    src: backup-test.sh.j2
+    dest: "{{ app_home }}/scripts/backup-test.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, testing]
+
+- name: Configure monthly backup test
+  cron:
+    name: "Monthly backup test"
+    minute: "0"
+    hour: "10"
+    day: "1"
+    job: "{{ app_home }}/scripts/backup-test.sh"
+    user: "{{ app_user }}"
+  when: environment == 'prod'
+  tags: [backup, testing, cron]
+
+- name: Create backup configuration file
+  template:
+    src: backup.conf.j2
+    dest: "{{ app_home }}/backup.conf"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0640'
+  tags: [backup, config]
+
+- name: Create backup notification script
+  template:
+    src: backup-notify.sh.j2
+    dest: "{{ app_home }}/scripts/backup-notify.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: notifications_enabled | default(false)
+  tags: [backup, notifications]
+
+- name: Set up backup retention policy
+  template:
+    src: backup-retention.sh.j2
+    dest: "{{ app_home }}/scripts/backup-retention.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, retention]
+
+- name: Configure backup retention cron job
+  cron:
+    name: "Backup retention policy"
+    minute: "0"
+    hour: "23"
+    job: "{{ app_home }}/scripts/backup-retention.sh"
+    user: "{{ app_user }}"
+  tags: [backup, retention, cron]
+
+- name: Create backup size monitoring script
+  template:
+    src: backup-size-monitor.sh.j2
+    dest: "{{ app_home }}/scripts/backup-size-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [backup, monitoring]
+
+- name: Configure backup size monitoring
+  cron:
+    name: "Backup size monitoring"
+    minute: "0"
+    hour: "7"
+    job: "{{ app_home }}/scripts/backup-size-monitor.sh"
+    user: "{{ app_user }}"
+  tags: [backup, monitoring, cron]
+
+- name: Create initial system backup
+  block:
+    - name: Run initial configuration backup
+      command: "{{ app_home }}/scripts/config-backup.sh"
+      register: initial_backup
+      changed_when: initial_backup.rc == 0
+
+    - name: Verify initial backup
+      stat:
+        path: "{{ app_home }}/backups/system/config-backup-{{ ansible_date_time.date }}.tar.gz"
+      register: backup_file
+
+    - name: Display backup status
+      debug:
+        msg: |
+          Initial backup status: {{ 'completed' if backup_file.stat.exists else 'failed' }}
+          Backup file: {{ app_home }}/backups/system/config-backup-{{ ansible_date_time.date }}.tar.gz
+          Size: {{ (backup_file.stat.size / 1024 / 1024) | round(2) }}MB
+      when: backup_file.stat.exists
+  when: backup_enabled | default(false)
+  tags: [backup, initial]
+
+- name: Display backup configuration summary
+  debug:
+    msg: |
+      Backup configuration completed:
+      - Backup enabled: {{ backup_enabled | default(false) }}
+      - Backup retention: {{ backup_retention_days }} days
+      - S3 backup: {{ 'enabled' if enable_s3_logging else 'disabled' }}
+      - AWS snapshots: {{ 'enabled' if snapshot_enabled and environment == 'prod' else 'disabled' }}
+      - Database backup: {{ 'enabled' if db_backup_enabled else 'disabled' }}
+      - Backup encryption: {{ 'enabled' if enable_encryption else 'disabled' }}
+      - Backup schedule: {{ backup_schedule }}
+      - Backup location: {{ app_home }}/backups
+      - Backup monitoring: configured
+      - Disaster recovery plan: created
+  tags: [backup, summary]

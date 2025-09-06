@@ -1,0 +1,468 @@
+- name: Pre-deployment checks
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  pre_tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          Starting deployment to {{ environment | default('unknown') }} environment
+          Target: {{ inventory_hostname }}
+          User: {{ ansible_user }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+      tags: [always, info]
+
+    - name: Check connectivity
+      wait_for_connection:
+        timeout: 60
+      tags: [always, connectivity]
+
+    - name: Verify target system
+      assert:
+        that:
+          - ansible_system == "Linux"
+          - ansible_distribution == "Ubuntu"
+        fail_msg: "Unsupported target system"
+        success_msg: "Target system verified"
+      tags: [always, verify]
+
+  tasks:
+    - name: Check system resources before deployment
+      include_tasks: health-check.yml
+      tags: [pre-check, health]
+
+    - name: Create deployment backup
+      block:
+        - name: Create pre-deployment backup
+          shell: |
+            timestamp=$(date +%Y%m%d_%H%M%S)
+            tar -czf {{ app_home }}/backups/pre-deployment-${timestamp}.tar.gz \
+              -C / etc/nginx var/www/html {{ app_home }}
+          register: backup_result
+
+        - name: Verify backup creation
+          stat:
+            path: "{{ app_home }}/backups/pre-deployment-{{ ansible_date_time.date }}_{{ ansible_date_time.time | replace(':', '') }}.tar.gz"
+          register: backup_file
+          failed_when: not backup_file.stat.exists
+
+        - name: Display backup info
+          debug:
+            msg: "Pre-deployment backup created: {{ backup_file.stat.path }}"
+      when: backup_enabled | default(true)
+      tags: [backup, pre-deployment]
+
+- name: Main deployment
+  hosts: all
+  become: yes
+  serial: 1  # Deploy one host at a time for zero-downtime
+  
+  tasks:
+    - name: Set maintenance mode (if configured)
+      template:
+        src: maintenance.html.j2
+        dest: "{{ web_root }}/maintenance.html"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0644'
+      when: maintenance_mode | default(false)
+      tags: [maintenance]
+
+    - name: Enable maintenance page
+      file:
+        src: "{{ web_root }}/maintenance.html"
+        dest: "{{ web_root }}/index.html"
+        state: link
+        force: yes
+      when: maintenance_mode | default(false)
+      notify: reload nginx
+      tags: [maintenance]
+
+    - name: Update system packages (if required)
+      apt:
+        update_cache: yes
+        upgrade: "{{ 'yes' if package_upgrade else 'no' }}"
+        autoremove: yes
+        autoclean: yes
+      when: package_upgrade | default(false)
+      tags: [packages, update]
+
+    - name: Deploy application code
+      block:
+        - name: Create application directory
+          file:
+            path: "{{ app_home }}/releases/{{ ansible_date_time.epoch }}"
+            state: directory
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: '0755'
+
+        - name: Deploy application files
+          template:
+            src: "{{ item.src }}"
+            dest: "{{ app_home }}/releases/{{ ansible_date_time.epoch }}/{{ item.dest }}"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: '{{ item.mode | default("0644") }}'
+          loop:
+            - { src: "index.html.j2", dest: "index.html" }
+            - { src: "health.html.j2", dest: "health" }
+            - { src: "status.json.j2", dest: "status" }
+          tags: [application, files]
+
+        - name: Create symlink to current release
+          file:
+            src: "{{ app_home }}/releases/{{ ansible_date_time.epoch }}"
+            dest: "{{ app_home }}/current"
+            state: link
+            force: yes
+          tags: [application, symlink]
+
+        - name: Update web root with new release
+          synchronize:
+            src: "{{ app_home }}/current/"
+            dest: "{{ web_root }}/"
+            delete: yes
+            owner: no
+            group: no
+          delegate_to: "{{ inventory_hostname }}"
+          tags: [application, sync]
+
+    - name: Update configuration files
+      block:
+        - name: Deploy Nginx configuration updates
+          template:
+            src: nginx-site.conf.j2
+            dest: /etc/nginx/sites-available/{{ project_name }}
+            backup: yes
+          notify: 
+            - test nginx config
+            - reload nginx
+          tags: [config, nginx]
+
+        - name: Deploy security configuration updates
+          template:
+            src: nginx-security.conf.j2
+            dest: /etc/nginx/conf.d/security.conf
+            backup: yes
+          notify:
+            - test nginx config
+            - reload nginx
+          tags: [config, security]
+
+        - name: Update application configuration
+          template:
+            src: app.conf.j2
+            dest: "{{ app_home }}/app.conf"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: '0640'
+          tags: [config, application]
+
+    - name: Database migrations (if required)
+      block:
+        - name: Run database migrations
+          shell: "{{ app_home }}/scripts/db-migrate.sh"
+          register: migration_result
+          changed_when: migration_result.rc == 0
+          
+        - name: Display migration results
+          debug:
+            var: migration_result.stdout_lines
+      when: 
+        - enable_database | default(false)
+        - run_migrations | default(false)
+      tags: [database, migration]
+
+    - name: Clear application cache
+      block:
+        - name: Clear application cache
+          shell: "rm -rf {{ app_home }}/cache/*"
+          
+        - name: Clear Nginx cache (if enabled)
+          shell: "rm -rf /var/cache/nginx/*"
+          failed_when: false
+          
+        - name: Clear system cache
+          shell: "sync && echo 3 > /proc/sys/vm/drop_caches"
+          when: environment != 'prod'  # Be careful with this in production
+      tags: [cache, clear]
+
+    - name: Disable maintenance mode
+      block:
+        - name: Remove maintenance symlink
+          file:
+            path: "{{ web_root }}/index.html"
+            state: absent
+          
+        - name: Restore main index page
+          copy:
+            src: "{{ app_home }}/current/index.html"
+            dest: "{{ web_root }}/index.html"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: '0644'
+            remote_src: yes
+          notify: reload nginx
+      when: maintenance_mode | default(false)
+      tags: [maintenance, disable]
+
+  handlers:
+    - name: test nginx config
+      command: nginx -t
+      register: nginx_test_result
+      failed_when: nginx_test_result.rc != 0
+
+    - name: reload nginx
+      service:
+        name: nginx
+        state: reloaded
+
+- name: Post-deployment verification
+  hosts: all
+  become: yes
+  
+  tasks:
+    - name: Wait for services to stabilize
+      pause:
+        seconds: 10
+      tags: [verification, wait]
+
+    - name: Run post-deployment health checks
+      include_tasks: health-check.yml
+      tags: [verification, health]
+
+    - name: Verify deployment
+      block:
+        - name: Test web server response
+          uri:
+            url: "http://{{ ansible_default_ipv4.address }}"
+            method: GET
+            status_code: 200
+            timeout: 30
+            return_content: yes
+          register: web_test
+          retries: 3
+          delay: 5
+
+        - name: Verify health endpoint
+          uri:
+            url: "http://{{ ansible_default_ipv4.address }}/health"
+            method: GET
+            status_code: 200
+            timeout: 10
+          register: health_test
+          retries: 3
+          delay: 2
+
+        - name: Test status endpoint
+          uri:
+            url: "http://{{ ansible_default_ipv4.address }}/status"
+            method: GET
+            timeout: 10
+            return_content: yes
+          register: status_test
+          failed_when: false
+
+        - name: Verify response content
+          assert:
+            that:
+              - "'Welcome to " + environment in web_test.content'
+              - web_test.status == 200
+            fail_msg: "Web content verification failed"
+            success_msg: "Web content verified successfully"
+
+    - name: Performance verification
+      block:
+        - name: Measure response time
+          uri:
+            url: "http://{{ ansible_default_ipv4.address }}"
+            method: GET
+          register: perf_test
+          
+        - name: Check response time threshold
+          assert:
+            that:
+              - perf_test.elapsed < 2.0  # 2 seconds threshold
+            fail_msg: "Response time too slow: {{ perf_test.elapsed }}s"
+            success_msg: "Response time acceptable: {{ perf_test.elapsed }}s"
+      tags: [verification, performance]
+
+    - name: Update deployment status
+      block:
+        - name: Record deployment information
+          lineinfile:
+            path: "{{ app_home }}/deployment.log"
+            line: "{{ ansible_date_time.iso8601 }} - Deployment to {{ environment }} completed successfully"
+            create: yes
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+
+        - name: Create deployment marker
+          file:
+            path: "{{ app_home }}/DEPLOYED_{{ ansible_date_time.epoch }}"
+            state: touch
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+
+        - name: Update current release info
+          template:
+            src: release-info.json.j2
+            dest: "{{ app_home }}/current-release.json"
+            owner: "{{ app_user }}"
+            group: "{{ app_group }}"
+            mode: '0644'
+          vars:
+            release_info:
+              version: "{{ deployment_version | default(ansible_date_time.epoch) }}"
+              environment: "{{ environment }}"
+              deployed_at: "{{ ansible_date_time.iso8601 }}"
+              deployed_by: "{{ ansible_user }}"
+              commit_hash: "{{ git_commit_hash | default('unknown') }}"
+      tags: [status, logging]
+
+    - name: Cleanup old releases
+      block:
+        - name: Find old releases
+          find:
+            paths: "{{ app_home }}/releases"
+            file_type: directory
+            age: "7d"
+          register: old_releases
+
+        - name: Remove old releases
+          file:
+            path: "{{ item.path }}"
+            state: absent
+          loop: "{{ old_releases.files }}"
+          when: old_releases.files | length > 5  # Keep at least 5 releases
+      tags: [cleanup, releases]
+
+    - name: Send deployment notification
+      block:
+        - name: Send success notification
+          uri:
+            url: "{{ slack_webhook }}"
+            method: POST
+            body_format: json
+            body:
+              text: "✅ Deployment to {{ environment }} completed successfully"
+              attachments:
+                - color: "good"
+                  fields:
+                    - title: "Environment"
+                      value: "{{ environment }}"
+                      short: true
+                    - title: "Version"
+                      value: "{{ deployment_version | default(ansible_date_time.epoch) }}"
+                      short: true
+                    - title: "Response Time"
+                      value: "{{ perf_test.elapsed }}s"
+                      short: true
+                    - title: "URL"
+                      value: "http://{{ ansible_default_ipv4.address }}"
+                      short: false
+          when: slack_webhook is defined and slack_webhook != ""
+          
+        - name: Send email notification
+          mail:
+            to: "{{ email_recipients }}"
+            subject: "Deployment Success - {{ environment | upper }}"
+            body: |
+              Deployment to {{ environment }} environment completed successfully.
+              
+              Details:
+              - Environment: {{ environment }}
+              - Host: {{ inventory_hostname }}
+              - Version: {{ deployment_version | default(ansible_date_time.epoch) }}
+              - Deployed by: {{ ansible_user }}
+              - Timestamp: {{ ansible_date_time.iso8601 }}
+              - Response Time: {{ perf_test.elapsed }}s
+              - URL: http://{{ ansible_default_ipv4.address }}
+          when: 
+            - email_notifications | default(false)
+            - email_recipients is defined
+      when: notifications_enabled | default(false)
+      tags: [notifications]
+
+- name: Deployment rollback (on failure)
+  hosts: all
+  become: yes
+  when: deployment_failed | default(false)
+  
+  tasks:
+    - name: Emergency rollback
+      block:
+        - name: Find previous release
+          shell: ls -1t {{ app_home }}/releases | head -2 | tail -1
+          register: previous_release
+          
+        - name: Rollback to previous release
+          file:
+            src: "{{ app_home }}/releases/{{ previous_release.stdout }}"
+            dest: "{{ app_home }}/current"
+            state: link
+            force: yes
+          when: previous_release.stdout != ""
+          
+        - name: Update web root
+          synchronize:
+            src: "{{ app_home }}/current/"
+            dest: "{{ web_root }}/"
+            delete: yes
+          delegate_to: "{{ inventory_hostname }}"
+          
+        - name: Reload nginx
+          service:
+            name: nginx
+            state: reloaded
+            
+        - name: Log rollback
+          lineinfile:
+            path: "{{ app_home }}/deployment.log"
+            line: "{{ ansible_date_time.iso8601 }} - ROLLBACK: Reverted to {{ previous_release.stdout }}"
+            
+        - name: Send rollback notification
+          debug:
+            msg: "ROLLBACK COMPLETED: Reverted to previous release {{ previous_release.stdout }}"
+      rescue:
+        - name: Restore from backup
+          shell: |
+            latest_backup=$(ls -1t {{ app_home }}/backups/pre-deployment-*.tar.gz | head -1)
+            if [ -n "$latest_backup" ]; then
+              tar -xzf "$latest_backup" -C /
+              systemctl reload nginx
+            fi
+      tags: [rollback, emergency]
+
+- name: Final deployment summary
+  hosts: all
+  become: no
+  
+  tasks:
+    - name: Display deployment summary
+      debug:
+        msg: |
+          🚀 DEPLOYMENT COMPLETED SUCCESSFULLY 🚀
+          
+          Environment: {{ environment | upper }}
+          Host: {{ inventory_hostname }} ({{ ansible_default_ipv4.address }})
+          Version: {{ deployment_version | default(ansible_date_time.epoch) }}
+          Deployed by: {{ ansible_user }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          
+          URLs:
+          - Main site: http://{{ ansible_default_ipv4.address }}
+          - Health check: http://{{ ansible_default_ipv4.address }}/health
+          - Status API: http://{{ ansible_default_ipv4.address }}/status
+          
+          Performance:
+          - Response time: {{ perf_test.elapsed }}s
+          - Status: {{ web_test.status }}
+          
+          Next steps:
+          - Monitor application logs: tail -f /var/log/{{ project_name }}/application.log
+          - Check system status: {{ app_home }}/scripts/system-monitor.sh
+          - View deployment log: cat {{ app_home }}/deployment.log
+      tags: [always, summary]

@@ -1,0 +1,268 @@
+- name: Install Nginx
+  apt:
+    name: nginx
+    state: present
+    update_cache: yes
+  tags: [nginx, install]
+
+- name: Remove default Nginx site
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/nginx/sites-enabled/default
+    - /var/www/html/index.nginx-debian.html
+  notify: reload nginx
+  tags: [nginx, config]
+
+- name: Create web root directory
+  file:
+    path: "{{ web_root }}"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [nginx, directories]
+
+- name: Create Nginx log directory
+  file:
+    path: /var/log/nginx/{{ project_name }}
+    state: directory
+    owner: www-data
+    group: adm
+    mode: '0755'
+  tags: [nginx, logging]
+
+- name: Configure Nginx main configuration
+  template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    backup: yes
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload nginx
+  tags: [nginx, config]
+
+- name: Create Nginx site configuration
+  template:
+    src: nginx-site.conf.j2
+    dest: /etc/nginx/sites-available/{{ project_name }}
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload nginx
+  tags: [nginx, config]
+
+- name: Enable Nginx site
+  file:
+    src: /etc/nginx/sites-available/{{ project_name }}
+    dest: /etc/nginx/sites-enabled/{{ project_name }}
+    state: link
+  notify: reload nginx
+  tags: [nginx, config]
+
+- name: Create custom error pages directory
+  file:
+    path: "{{ web_root }}/errors"
+    state: directory
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  when: error_pages_custom | default(false)
+  tags: [nginx, errors]
+
+- name: Create custom error pages
+  template:
+    src: "error-{{ item }}.html.j2"
+    dest: "{{ web_root }}/errors/{{ item }}.html"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  loop:
+    - 404
+    - 500
+    - 502
+    - 503
+    - 504
+  when: error_pages_custom | default(false)
+  tags: [nginx, errors]
+
+- name: Create main index page
+  template:
+    src: index.html.j2
+    dest: "{{ web_root }}/index.html"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  tags: [nginx, content]
+
+- name: Create health check endpoint
+  template:
+    src: health.html.j2
+    dest: "{{ web_root }}/health"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  when: health_check_enabled | default(true)
+  tags: [nginx, health]
+
+- name: Create API status endpoint
+  template:
+    src: status.json.j2
+    dest: "{{ web_root }}/status"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0644'
+  tags: [nginx, api]
+
+- name: Create Nginx security configuration
+  template:
+    src: nginx-security.conf.j2
+    dest: /etc/nginx/conf.d/security.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload nginx
+  tags: [nginx, security]
+
+- name: Configure rate limiting
+  template:
+    src: nginx-rate-limit.conf.j2
+    dest: /etc/nginx/conf.d/rate-limit.conf
+    owner: root
+    group: root
+    mode: '0644'
+  when: rate_limiting | default(false)
+  notify: reload nginx
+  tags: [nginx, security, rate-limit]
+
+- name: Configure SSL (if enabled)
+  block:
+    - name: Create SSL directory
+      file:
+        path: /etc/nginx/ssl
+        state: directory
+        owner: root
+        group: root
+        mode: '0700'
+
+    - name: Generate self-signed SSL certificate (development only)
+      command: |
+        openssl req -x509 -nodes -days 365 -newkey rsa:2048 
+        -keyout /etc/nginx/ssl/{{ project_name }}.key 
+        -out /etc/nginx/ssl/{{ project_name }}.crt 
+        -subj "/C=US/ST=State/L=City/O=Organization/OU=Department/CN={{ ansible_default_ipv4.address }}"
+      args:
+        creates: /etc/nginx/ssl/{{ project_name }}.crt
+      when: environment == 'dev'
+
+    - name: Configure SSL in Nginx
+      template:
+        src: nginx-ssl.conf.j2
+        dest: /etc/nginx/conf.d/ssl.conf
+        owner: root
+        group: root
+        mode: '0644'
+      notify: reload nginx
+  when: ssl_enabled | default(false)
+  tags: [nginx, ssl]
+
+- name: Configure Nginx log rotation
+  template:
+    src: nginx-logrotate.j2
+    dest: /etc/logrotate.d/nginx-custom
+    owner: root
+    group: root
+    mode: '0644'
+  tags: [nginx, logging]
+
+- name: Create Nginx monitoring script
+  template:
+    src: nginx-monitor.sh.j2
+    dest: "{{ app_home }}/scripts/nginx-monitor.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [nginx, monitoring]
+
+- name: Configure Nginx status page
+  template:
+    src: nginx-status.conf.j2
+    dest: /etc/nginx/conf.d/status.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: reload nginx
+  tags: [nginx, monitoring]
+
+- name: Test Nginx configuration
+  command: nginx -t
+  register: nginx_test
+  changed_when: false
+  tags: [nginx, test]
+
+- name: Display Nginx test results
+  debug:
+    var: nginx_test.stdout_lines
+  when: nginx_test.stdout_lines is defined
+  tags: [nginx, test]
+
+- name: Start and enable Nginx service
+  service:
+    name: nginx
+    state: started
+    enabled: yes
+  tags: [nginx, service]
+
+- name: Create backup script for Nginx configuration
+  template:
+    src: nginx-backup.sh.j2
+    dest: "{{ app_home }}/scripts/nginx-backup.sh"
+    owner: "{{ app_user }}"
+    group: "{{ app_group }}"
+    mode: '0755'
+  tags: [nginx, backup]
+
+- name: Configure Nginx backup cron job
+  cron:
+    name: "Nginx configuration backup"
+    minute: "0"
+    hour: "2"
+    job: "{{ app_home }}/scripts/nginx-backup.sh"
+    user: "{{ app_user }}"
+  when: backup_enabled | default(false)
+  tags: [nginx, backup, cron]
+
+- name: Wait for Nginx to be ready
+  wait_for:
+    port: "{{ web_port }}"
+    host: "{{ ansible_default_ipv4.address }}"
+    timeout: 30
+  tags: [nginx, verification]
+
+- name: Test web server response
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}"
+    method: GET
+    status_code: 200
+    timeout: 10
+  register: web_response
+  tags: [nginx, verification]
+
+- name: Display web server status
+  debug:
+    msg: |
+      Nginx installation completed successfully:
+      - Service status: {{ ansible_facts.services['nginx'].state }}
+      - Configuration test: {{ 'PASSED' if nginx_test.rc == 0 else 'FAILED' }}
+      - Web response: {{ web_response.status }} {{ web_response.msg }}
+      - Access URL: http://{{ ansible_default_ipv4.address }}
+  tags: [nginx, summary]
+
+handlers:
+  - name: reload nginx
+    service:
+      name: nginx
+      state: reloaded
+    listen: reload nginx
