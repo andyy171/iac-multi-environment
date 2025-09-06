@@ -1,4 +1,4 @@
-name: IaC Multi-Environment Deploy
+name: IaC Multi-Environment CI/CD Deploy
 
 on:
   push:
