@@ -7,47 +7,55 @@ terraform {
       version = "~> 5.0"
     }
   }
-
-  backend "s3" {
-    bucket         = "iac-terraform-state-dev-ap-south-1"
-    key            = "dev/terraform.tfstate"
-    region         = "ap-south-1"
-    dynamodb_table = "iac-terraform-locks"
-    encrypt        = true
-  }
 }
 
+# Configure the AWS Provider
 provider "aws" {
   region = var.region
 
   default_tags {
     tags = {
       Environment = "dev"
-      Project     = "iac-multi-env"
+      Project     = var.project_name
       ManagedBy   = "terraform"
-      Owner       = "devops-team"
+      Owner       = "development-team"
+      CostCenter  = "development"
     }
   }
 }
 
-# Call the main infrastructure module
+# Call the web infrastructure module
 module "web_infrastructure" {
   source = "../../modules/web-infrastructure"
 
-  environment            = var.environment
-  project_name          = var.project_name
-  region                = var.region
-  vpc_cidr              = var.vpc_cidr
-  public_subnet_cidr    = var.public_subnet_cidr
-  instance_type         = var.instance_type
-  key_name              = var.key_name
-  allowed_cidr_blocks   = var.allowed_cidr_blocks
-  ssh_cidr_blocks       = var.ssh_cidr_blocks
-  root_volume_size      = var.root_volume_size
-  use_elastic_ip        = var.use_elastic_ip
+  # Basic Configuration
+  environment  = var.environment
+  project_name = var.project_name
+  region       = var.region
 
-  tags = {
-    CostCenter = "development"
-    AutoShutdown = "enabled"
-  }
+  # Network Configuration
+  vpc_cidr           = var.vpc_cidr
+  public_subnet_cidr = var.public_subnet_cidr
+
+  # Instance Configuration
+  instance_type    = var.instance_type
+  key_name         = var.key_name
+  root_volume_size = var.root_volume_size
+
+  # Security Configuration
+  allowed_cidr_blocks = var.allowed_cidr_blocks
+  ssh_cidr_blocks     = var.ssh_cidr_blocks
+
+  # Feature Flags - Dev environment optimized for cost
+  use_elastic_ip       = var.use_elastic_ip
+  enable_nat_gateway   = false  # Not needed for dev
+  enable_vpc_flow_logs = false  # Not needed for dev
+  enable_network_acl   = false  # Not needed for dev
+  enable_load_balancer = false  # Not needed for dev
+  enable_database      = false  # Not needed for dev
+  enable_encryption    = var.enable_encryption
+  enable_s3_logging    = false  # Not needed for dev
+
+  # Additional tags
+  tags = var.tags
 }
